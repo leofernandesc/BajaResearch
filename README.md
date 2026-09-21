@@ -255,7 +255,6 @@ Execute:
 
 ```bash
 hermes chat \
-  -t baja_research \
   -s baja-research:baja-research \
   -q "Busque 3 trabalhos extensos sobre otimização de suspensão em Baja SAE e veículos off-road. Priorize TCCs e informe qualquer fonte indisponível."
 ```
@@ -269,7 +268,6 @@ Para um teste de eletrônica que preserve a aplicação correta:
 
 ```bash
 hermes chat \
-  -t baja_research \
   -s baja-research:baja-research \
   -q "Busque 3 TCCs ou dissertações sobre telemetria, aquisição de dados e sensores em Baja SAE ou veículos off-road."
 ```
