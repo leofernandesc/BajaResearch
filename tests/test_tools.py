@@ -1,4 +1,5 @@
 import json
+import time
 
 from models import Paper
 from clients.link_validator import AccessCheck
@@ -351,6 +352,30 @@ def test_repository_metadata_is_resolved_before_context_gate(tmp_path):
     assert result["returned"] == 1
     assert result["results"][0]["institution"] == "Example University"
     assert result["results"][0]["access_status"] == "verified_pdf"
+
+
+def test_preverified_pdf_survives_expired_search_budget(tmp_path):
+    paper = Paper(
+        "",
+        "Projeto de suspensão Baja SAE",
+        document_type="TCC",
+        full_text_url="https://repository.example/verified.pdf",
+        access_status="verified_pdf",
+    )
+    service = ResearchService(
+        storage=ResearchStorage(tmp_path / "cache.sqlite3"),
+        clients={},
+        link_validator=AcceptAllPdfVerifier(),
+    )
+    selected, rejected = service._select_final_papers(
+        [paper],
+        limit=1,
+        open_access_only=True,
+        prefer_long_form=True,
+        deadline=time.monotonic() - 1,
+    )
+    assert selected == [paper]
+    assert rejected == 0
 
 
 def test_long_form_verified_work_is_listed_before_article(tmp_path):

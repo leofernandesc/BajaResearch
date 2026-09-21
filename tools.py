@@ -306,6 +306,13 @@ class ResearchService:
             final = ordered[:limit]
             self._validate_papers(final)
             return final, 0
+        already_verified = [
+            paper
+            for paper in ordered
+            if paper.access_status == "verified_pdf" and paper.full_text_url
+        ]
+        if len(already_verified) >= limit:
+            return already_verified[:limit], 0
         # Work in small ordered batches and stop as soon as the final count is
         # filled. This bounds network work for WhatsApp while preserving the
         # long-form-first policy.
@@ -642,6 +649,7 @@ class ResearchService:
                 paper.title.casefold(),
             ),
         )[: max(limit * 2, 6)]
+        repository_verified = 0
         for paper in repository_candidates:
             if time.monotonic() >= search_deadline:
                 break
@@ -653,6 +661,12 @@ class ResearchService:
                     paper.internal_id,
                     exc_info=True,
                 )
+            if paper.candidate_full_text_urls():
+                self._validate_papers([paper])
+                if paper.access_status == "verified_pdf" and paper.full_text_url:
+                    repository_verified += 1
+                    if repository_verified >= limit:
+                        break
         # Repository/OAI enrichment can fill a previously missing year or
         # academic ID. Run identity merging again before the hard gates so a
         # record found by Oasisbr and OpenAlex cannot occupy two final slots.
