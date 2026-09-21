@@ -15,6 +15,7 @@ class ResearchConfig:
     openalex_api_key: str | None = None
     semantic_scholar_api_key: str | None = None
     crossref_mailto: str | None = None
+    unpaywall_email: str | None = None
     access_timeout_seconds: float = 8.0
     access_valid_ttl_hours: float = 168.0
     access_invalid_ttl_hours: float = 24.0
@@ -64,6 +65,7 @@ def config_from_context(ctx: Any) -> ResearchConfig:
         openalex_api_key=os.getenv("OPENALEX_API_KEY") or None,
         semantic_scholar_api_key=os.getenv("SEMANTIC_SCHOLAR_API_KEY") or None,
         crossref_mailto=os.getenv("CROSSREF_MAILTO") or None,
+        unpaywall_email=os.getenv("UNPAYWALL_EMAIL") or None,
         access_timeout_seconds=_env_float(
             "BAJA_RESEARCH_ACCESS_TIMEOUT_SECONDS", 8.0
         ),

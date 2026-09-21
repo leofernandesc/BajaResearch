@@ -7,7 +7,9 @@ from clients.http import JsonHttpClient
 from clients.link_validator import AccessCheck, LinkValidator
 from clients.openalex import OpenAlexClient
 from clients.oasisbr import OasisbrClient
+from clients.repositories import RepositoryResolver
 from clients.semantic_scholar import SemanticScholarClient
+from clients.unpaywall import UnpaywallClient
 from models import Paper
 from ranking import rank_papers
 from storage import ResearchStorage
@@ -182,6 +184,116 @@ def test_bdtd_normalizes_master_thesis_and_direct_pdf_candidate():
     assert paper.metadata["full_text_candidates"] == [
         "https://repository.example/document.pdf"
     ]
+
+
+def test_dspace7_repository_resolution_enriches_and_finds_original_pdf():
+    item_id = "d64c5b62-e396-41e4-b978-2298433e0595"
+
+    class LandingVerifier:
+        def check(self, url):
+            return AccessCheck(
+                "invalid",
+                url,
+                final_url=f"https://repository.example/entities/publication/{item_id}",
+                http_status=200,
+                content_type="text/html",
+                reason="response_is_not_pdf",
+            )
+
+    def handler(request):
+        path = request.url.path
+        if path.endswith(f"/items/{item_id}"):
+            payload = {
+                "metadata": {
+                    "dc.description.abstract": [{"value": "Suspension abstract"}],
+                    "dc.contributor.institution": [{"value": "Example University"}],
+                    "dc.date.issued": [{"value": "2022-03-08"}],
+                    "dc.type": [{"value": "Trabalho de conclusão de curso"}],
+                    "dc.subject": [{"value": "Baja SAE"}],
+                }
+            }
+        elif path.endswith(f"/items/{item_id}/bundles"):
+            payload = {
+                "_embedded": {
+                    "bundles": [
+                        {
+                            "name": "ORIGINAL",
+                            "_links": {
+                                "bitstreams": {
+                                    "href": "https://repository.example/server/api/core/bundles/b1/bitstreams"
+                                }
+                            },
+                        }
+                    ]
+                }
+            }
+        elif path.endswith("/bundles/b1/bitstreams"):
+            payload = {
+                "_embedded": {
+                    "bitstreams": [
+                        {
+                            "name": "suspension.pdf",
+                            "_links": {
+                                "content": {
+                                    "href": "https://repository.example/server/api/core/bitstreams/pdf1/content"
+                                }
+                            },
+                        }
+                    ]
+                }
+            }
+        else:
+            raise AssertionError(path)
+        return httpx.Response(200, json=payload, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    resolver = RepositoryResolver(LandingVerifier(), http_client=client)
+    paper = Paper(
+        "",
+        "Projeto de suspensão Baja SAE",
+        landing_url="http://hdl.handle.net/11449/217462",
+        sources=["oasisbr"],
+    )
+    try:
+        candidates = resolver.resolve(paper)
+    finally:
+        resolver.close()
+        client.close()
+    assert candidates == [
+        "https://repository.example/server/api/core/bitstreams/pdf1/content"
+    ]
+    assert paper.document_type == "bachelor_thesis"
+    assert paper.year == 2022
+    assert paper.institution == "Example University"
+    assert paper.abstract == "Suspension abstract"
+
+
+def test_unpaywall_returns_candidates_but_does_not_mark_them_verified():
+    def handler(request):
+        assert request.url.params["email"] == "researcher@example.com"
+        return httpx.Response(
+            200,
+            json={
+                "doi": "10.1000/example",
+                "is_oa": True,
+                "oa_status": "green",
+                "best_oa_location": {
+                    "url_for_pdf": "https://repository.example/document.pdf",
+                    "url": "https://repository.example/item",
+                },
+            },
+            request=request,
+        )
+
+    raw = JsonHttpClient(
+        "https://api.unpaywall.org/v2",
+        "unpaywall",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    client = UnpaywallClient(email="researcher@example.com", http=raw)
+    result = client.resolve("10.1000/example")
+    assert result["candidates"] == ["https://repository.example/document.pdf"]
+    assert "verified" not in result
 
 
 def test_pdf_verifier_rejects_dead_link_and_accepts_pdf_bytes():

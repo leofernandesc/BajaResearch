@@ -72,11 +72,7 @@ def _work_to_paper(work: Mapping[str, Any]) -> Paper | None:
     is_oa = bool(open_access.get("is_oa")) or bool(best_oa.get("is_oa"))
     oa_url = None
     if is_oa:
-        oa_url = text(
-            best_oa.get("pdf_url")
-            or best_oa.get("landing_page_url")
-            or open_access.get("oa_url")
-        )
+        oa_url = text(best_oa.get("pdf_url"))
     authors: list[str] = []
     for authorship in as_list(work.get("authorships")):
         if isinstance(authorship, Mapping):
@@ -97,7 +93,12 @@ def _work_to_paper(work: Mapping[str, Any]) -> Paper | None:
         or work.get("id")
     )
     raw_relevance = work.get("relevance_score")
-    metadata: dict[str, Any] = {}
+    pdf_candidates = [
+        text(as_mapping(location).get("pdf_url"))
+        for location in as_list(work.get("locations"))
+    ]
+    pdf_candidates = list(dict.fromkeys(value for value in pdf_candidates if value))
+    metadata: dict[str, Any] = {"full_text_candidates": pdf_candidates}
     if raw_relevance is not None:
         try:
             metadata["openalex_relevance_score"] = float(raw_relevance)

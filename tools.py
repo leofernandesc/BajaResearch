@@ -16,7 +16,9 @@ try:
     from .clients.link_validator import LinkValidator
     from .clients.oasisbr import OasisbrClient
     from .clients.openalex import OpenAlexClient
+    from .clients.repositories import RepositoryResolver
     from .clients.semantic_scholar import SemanticScholarClient
+    from .clients.unpaywall import UnpaywallClient
     from .citations import format_abnt, format_bibtex
     from .config import ResearchConfig, config_from_context
     from .models import Paper, deduplicate_papers, merge_papers, normalize_doi
@@ -41,7 +43,9 @@ except ImportError:  # pragma: no cover - direct module imports
     from clients.link_validator import LinkValidator
     from clients.oasisbr import OasisbrClient
     from clients.openalex import OpenAlexClient
+    from clients.repositories import RepositoryResolver
     from clients.semantic_scholar import SemanticScholarClient
+    from clients.unpaywall import UnpaywallClient
     from citations import format_abnt, format_bibtex
     from config import ResearchConfig, config_from_context
     from models import Paper, deduplicate_papers, merge_papers, normalize_doi
@@ -83,6 +87,8 @@ class ResearchService:
         storage: ResearchStorage | None = None,
         clients: Mapping[str, Any] | None = None,
         link_validator: LinkValidator | None = None,
+        repository_resolver: RepositoryResolver | None = None,
+        unpaywall_client: UnpaywallClient | None = None,
     ) -> None:
         self.config = config or ResearchConfig()
         self.storage = storage or ResearchStorage(
@@ -123,6 +129,15 @@ class ResearchService:
             invalid_ttl_hours=self.config.access_invalid_ttl_hours,
             temporary_ttl_hours=self.config.access_temporary_ttl_hours,
         )
+        self.repository_resolver = repository_resolver or RepositoryResolver(
+            self.link_validator,
+            timeout=self.config.access_timeout_seconds,
+        )
+        self.unpaywall_client = unpaywall_client or UnpaywallClient(
+            email=self.config.unpaywall_email,
+            timeout=self.config.request_timeout_seconds,
+            max_retries=min(1, self.config.max_retries),
+        )
         self.last_status: dict[str, Any] = {}
 
     @classmethod
@@ -143,6 +158,8 @@ class ResearchService:
                 except Exception:
                     logger.debug("source client close failed", exc_info=True)
         self.link_validator.close()
+        self.repository_resolver.close()
+        self.unpaywall_client.close()
 
     def _validate_papers(self, papers: list[Paper]) -> None:
         """Attach a public URL only after anonymous PDF-byte verification."""
@@ -272,6 +289,37 @@ class ResearchService:
         # skipped without issuing a request for every raw source result.
         candidate_window = ranked[: min(len(ranked), max(40, limit * 8))]
         self._validate_papers(candidate_window)
+        unresolved = [
+            paper for paper in candidate_window if paper.access_status != "verified_pdf"
+        ]
+        for paper in unresolved:
+            try:
+                self.repository_resolver.resolve(paper)
+            except Exception:
+                logger.info(
+                    "event=repository_resolution status=error paper_id=%s",
+                    paper.internal_id,
+                    exc_info=True,
+                )
+            if paper.doi and self.unpaywall_client.configured:
+                try:
+                    resolution = self.unpaywall_client.resolve(paper.doi)
+                    existing = list(paper.metadata.get("full_text_candidates") or [])
+                    paper.metadata["full_text_candidates"] = list(
+                        dict.fromkeys([*existing, *resolution.get("candidates", [])])
+                    )
+                    paper.provenance["unpaywall"] = {
+                        "doi": paper.doi,
+                        "is_oa": resolution.get("is_oa"),
+                        "oa_status": resolution.get("oa_status"),
+                    }
+                except SourceError:
+                    logger.info(
+                        "event=unpaywall_resolution status=error paper_id=%s",
+                        paper.internal_id,
+                    )
+        if unresolved:
+            self._validate_papers(unresolved)
         usable = [
             paper
             for paper in candidate_window
@@ -731,6 +779,10 @@ class ResearchService:
         result = self.storage.stats()
         result["sources_configured"] = {
             source: self._source_info(source, client) for source, client in self.clients.items()
+        }
+        result["resolvers_configured"] = {
+            "repository": True,
+            "unpaywall": self.unpaywall_client.configured,
         }
         result["api_endpoints"] = {
             "oasisbr": "https://oasisbr.ibict.br/vufind/api/v1",
