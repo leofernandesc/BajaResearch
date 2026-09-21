@@ -11,8 +11,10 @@ from typing import Any, Callable, Iterable, Mapping
 
 try:
     from .clients.base import SourceError, SourceResult, timed_call
+    from .clients.bdtd import BdtdClient
     from .clients.crossref import CrossrefClient
     from .clients.link_validator import LinkValidator
+    from .clients.oasisbr import OasisbrClient
     from .clients.openalex import OpenAlexClient
     from .clients.semantic_scholar import SemanticScholarClient
     from .citations import format_abnt, format_bibtex
@@ -34,8 +36,10 @@ try:
     from .storage import ResearchStorage
 except ImportError:  # pragma: no cover - direct module imports
     from clients.base import SourceError, SourceResult, timed_call
+    from clients.bdtd import BdtdClient
     from clients.crossref import CrossrefClient
     from clients.link_validator import LinkValidator
+    from clients.oasisbr import OasisbrClient
     from clients.openalex import OpenAlexClient
     from clients.semantic_scholar import SemanticScholarClient
     from citations import format_abnt, format_bibtex
@@ -87,6 +91,14 @@ class ResearchService:
         self.clients: dict[str, Any] = dict(
             clients
             or {
+                "oasisbr": OasisbrClient(
+                    timeout=self.config.request_timeout_seconds,
+                    max_retries=self.config.max_retries,
+                ),
+                "bdtd": BdtdClient(
+                    timeout=self.config.request_timeout_seconds,
+                    max_retries=self.config.max_retries,
+                ),
                 "openalex": OpenAlexClient(
                     api_key=self.config.openalex_api_key,
                     timeout=self.config.request_timeout_seconds,
@@ -271,7 +283,7 @@ class ResearchService:
     def _source_info(self, source: str, client: Any) -> dict[str, Any]:
         return {
             "configured": bool(getattr(client, "configured", False)),
-            "key_optional": source == "openalex",
+            "key_optional": source in {"openalex", "oasisbr", "bdtd"},
         }
 
     def _parallel(self, operations: list[tuple[str, str | None, Callable[[], list[Paper]]]]) -> list[SourceResult]:
@@ -721,6 +733,8 @@ class ResearchService:
             source: self._source_info(source, client) for source, client in self.clients.items()
         }
         result["api_endpoints"] = {
+            "oasisbr": "https://oasisbr.ibict.br/vufind/api/v1",
+            "bdtd": "https://bdtd.ibict.br/vufind/api/v1",
             "openalex": "https://api.openalex.org",
             "semantic_scholar": "https://api.semanticscholar.org/graph/v1",
             "crossref": "https://api.crossref.org",

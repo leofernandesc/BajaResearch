@@ -1,10 +1,12 @@
 import httpx
 
 from clients.base import SourceError
+from clients.bdtd import BdtdClient
 from clients.crossref import CrossrefClient
 from clients.http import JsonHttpClient
 from clients.link_validator import AccessCheck, LinkValidator
 from clients.openalex import OpenAlexClient
+from clients.oasisbr import OasisbrClient
 from clients.semantic_scholar import SemanticScholarClient
 from models import Paper
 from ranking import rank_papers
@@ -102,6 +104,84 @@ def test_crossref_does_not_claim_open_access_without_license():
     paper = CrossrefClient(mailto="researcher@example.com", http=raw).search("crossref", limit=1)[0]
     assert paper.doi == "10.1000/crossref"
     assert paper.open_access_url is None
+
+
+def test_oasisbr_normalizes_bachelor_thesis_without_claiming_landing_as_pdf():
+    def handler(request):
+        assert request.url.path == "/vufind/api/v1/search"
+        assert request.url.params["lookfor"] == "Baja SAE suspension"
+        return httpx.Response(
+            200,
+            json={
+                "resultCount": 1,
+                "records": [
+                    {
+                        "id": "UNSP_record-1",
+                        "title": "Projeto de suspensão dianteira para mini Baja SAE",
+                        "authors": {"primary": {"Nogueira, Rodrigo": []}},
+                        "formats": ["bachelorThesis"],
+                        "languages": ["por"],
+                        "subjects": ["Baja SAE", "Suspensão Duplo A"],
+                        "urls": [{"url": "http://hdl.handle.net/11449/217462"}],
+                        "oai_identifier_st": "oai:repositorio.unesp.br:11449/217462",
+                    }
+                ],
+                "status": "OK",
+            },
+            request=request,
+        )
+
+    raw = JsonHttpClient(
+        "https://oasisbr.ibict.br/vufind/api/v1",
+        "oasisbr",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    paper = OasisbrClient(http=raw).search("Baja SAE suspension", limit=5)[0]
+    assert paper.oasisbr_id == "UNSP_record-1"
+    assert paper.document_type == "bachelor_thesis"
+    assert paper.authors == ["Nogueira, Rodrigo"]
+    assert paper.landing_url == "http://hdl.handle.net/11449/217462"
+    assert paper.open_access_url is None
+    assert paper.metadata["oai_identifier"].startswith("oai:")
+
+
+def test_bdtd_normalizes_master_thesis_and_direct_pdf_candidate():
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "resultCount": 1,
+                "records": [
+                    {
+                        "id": "UFSC_record-2",
+                        "title": "Modelagem dinâmica do Baja SAE",
+                        "authors": {"primary": {"Berto, Lucas": []}},
+                        "formats": ["masterThesis"],
+                        "languages": ["por"],
+                        "subjects": ["Dinâmica veicular"],
+                        "urls": [
+                            {"url": "https://repository.example/item"},
+                            {"url": "https://repository.example/document.pdf"},
+                        ],
+                    }
+                ],
+                "status": "OK",
+            },
+            request=request,
+        )
+
+    raw = JsonHttpClient(
+        "https://bdtd.ibict.br/vufind/api/v1",
+        "bdtd",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    paper = BdtdClient(http=raw).search("Baja SAE", limit=5)[0]
+    assert paper.bdtd_id == "UFSC_record-2"
+    assert paper.document_type == "master_thesis"
+    assert paper.open_access_url.endswith("document.pdf")
+    assert paper.metadata["full_text_candidates"] == [
+        "https://repository.example/document.pdf"
+    ]
 
 
 def test_pdf_verifier_rejects_dead_link_and_accepts_pdf_bytes():
