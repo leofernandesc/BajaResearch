@@ -626,15 +626,19 @@ class ResearchService:
                 ]
             )
         focus = (technical_focus or queries[0]).strip()
-        repository_candidates = [
-            paper
-            for paper in unique
-            if set(paper.sources) & {"oasisbr", "bdtd"}
-            and (
-                technical_relevance_signal(paper, focus, effective_queries) >= 0.30
-                or "bdtd" in paper.sources
-            )
-        ][: max(limit * 2, 6)]
+        repository_candidates = sorted(
+            (
+                paper
+                for paper in unique
+                if set(paper.sources) & {"oasisbr", "bdtd"}
+            ),
+            key=lambda paper: (
+                -technical_relevance_signal(paper, focus, effective_queries),
+                -application_context_signal(paper),
+                -int(is_long_form_document(paper.document_type)),
+                paper.title.casefold(),
+            ),
+        )[: max(limit * 2, 6)]
         for paper in repository_candidates:
             if time.monotonic() >= search_deadline:
                 break
@@ -646,6 +650,10 @@ class ResearchService:
                     paper.internal_id,
                     exc_info=True,
                 )
+        # Repository/OAI enrichment can fill a previously missing year or
+        # academic ID. Run identity merging again before the hard gates so a
+        # record found by Oasisbr and OpenAlex cannot occupy two final slots.
+        unique = deduplicate_papers(unique)
         unique, relevance_counts = filter_relevant_papers(
             unique,
             focus,

@@ -55,3 +55,26 @@ def test_repeated_normalized_object_without_year_is_not_duplicated():
     copies = [Paper.from_dict(paper.to_storage_dict()) for _ in range(3)]
     merged = deduplicate_papers(copies)
     assert len(merged) == 1
+
+
+def test_same_title_merges_after_repository_fills_missing_year():
+    repository = Paper(
+        "",
+        "Avaliação da rigidez torcional do chassi Baja SAE",
+        year=None,
+        oasisbr_id="repository-record",
+        sources=["oasisbr"],
+    )
+    api_record = Paper(
+        "",
+        "Avaliação da rigidez torcional do chassi Baja SAE",
+        year=2016,
+        openalex_id="W2016",
+        sources=["openalex"],
+    )
+    before_enrichment = deduplicate_papers([repository, api_record])
+    assert len(before_enrichment) == 2
+    before_enrichment[0].year = 2016
+    after_enrichment = deduplicate_papers(before_enrichment)
+    assert len(after_enrichment) == 1
+    assert set(after_enrichment[0].sources) == {"oasisbr", "openalex"}
