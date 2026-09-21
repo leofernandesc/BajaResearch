@@ -1,6 +1,6 @@
 ---
 name: baja-research
-description: "Search and cite real academic papers for any Baja SAE engineering or project-management question."
+description: "Find free, verified, technically relevant academic work for Baja SAE teams."
 version: 0.1.0
 author: Leonardo Fernandes Cavalcante
 license: MIT
@@ -11,74 +11,94 @@ metadata:
 
 # BAJA Research
 
-Use the BAJA Research tools whenever the user asks for papers, academic
-articles, literature, references, related work, or technical studies. The
-plugin searches OpenAlex, Semantic Scholar, and Crossref and returns normalized
-records. It is not a general web search tool.
+Use this skill whenever the user asks for papers, TCCs, monographs, theses,
+dissertations, academic literature, technical references, related work, or a
+bibliography for a Baja SAE problem. This is an evidence-backed academic
+search workflow, not a general web search.
 
-## Required workflow
+## Non-negotiable policy
 
-1. Understand the user's engineering or management problem and identify its
-   domain, phenomenon, application, and useful technical vocabulary.
-2. When helpful, translate the terminology to technical English. Keep the
-   original language in the final answer.
-3. Build about three to five complementary queries: start with Baja SAE when
-   relevant, broaden to Formula SAE/Formula Student/off-road/ATV/automotive
-   engineering, and include the general technical domain. Do not treat this
-   list as a rigid taxonomy; structures, materials, manufacturing, welding,
-   suspension, dynamics, brakes, powertrain, CVT, ergonomics, safety,
-   embedded systems, data acquisition, telemetry, sensors, CAN, project
-   management, optimization, and testing are all valid examples.
-4. For a broad domain request such as “eletrônica”, preserve the Baja
-   application in at least one query (for example, Baja SAE vehicle
-   electronics, off-road telemetry, or Formula SAE embedded systems). Do not
-   return generic power-electronics papers as the primary answer merely
-   because they match the broad word.
-5. When the user asks for detail, a monograph, TCC, thesis, dissertation, or
-   extensive work—or when the topic is broad—include a thesis/repository
-   query, such as `undergraduate thesis`, `dissertation`, or `institutional
-   repository`. The tool defaults to `prefer_theses=true` and adds a small
-   retrieval safety net when the LLM omitted that variant.
-6. Call `search_academic_papers` with the complete query list. Its `limit` is
-   the final number of records, not the per-source request size. Keep
-   `baja_context=true` unless the user explicitly requests a domain-only
-   search, and keep `prefer_theses=true` for detailed work. Keep
-   `open_access_only=true` (the default): do not recommend a paper whose full
-   text is likely behind a paywall. Keep `exclude_electric_vehicles=true`
-   (also the default); only disable it when the user explicitly asks for EV,
-   hybrid, battery-electric or fuel-cell vehicle literature.
-7. Use `get_paper` for detail, `find_related_papers` for follow-up discovery,
-   and `format_citation` when the user requests ABNT or BibTeX.
-8. Present no more than five papers by default. For each, include the exact
-   returned title, shortened author list, year, venue when available, DOI or
-   verified URL, and a short explanation of relevance. Do not paste full
-   abstracts. If the tool reports `invalid` or `unknown` link verification,
-   do not print that raw URL; say that no verified access link was returned.
-9. Answer in the user's language and mention that the user can ask for more
-   detail, related papers, date/open-access filters, a broader search, or a
-   citation.
+- Recommend only records returned by BAJA Research with
+  `access_status=verified_pdf`, a `full_text_url`, and anonymous PDF access
+  verified by the plugin. A DOI, an open-access label, or a publisher landing
+  page alone is not sufficient.
+- Every recommendation must match both the requested technical focus and a
+  Baja SAE, Mini Baja, Formula SAE/Formula Student, ATV, or off-road vehicle
+  context. Do not answer a broad request such as "eletrônica" with generic
+  power-electronics papers.
+- Prefer TCCs, monographs, dissertations, and theses because they usually give
+  the team more implementation detail. Use articles to fill remaining slots
+  only when they satisfy the same relevance and free-PDF requirements, unless
+  the user explicitly asks to see articles first.
+- Exclude electric, hybrid, battery-electric, and fuel-cell vehicle work by
+  default. Only include it when the user explicitly asks for that technology.
+- Never weaken the free-full-text or Baja-context requirements, even if the
+  user asks for more results. Return fewer works and explain the shortage.
+- Never scrape Google Scholar and never imply that BAJA Research searched it.
+
+## Required search workflow
+
+1. Identify the technical area, phenomenon or problem, vehicle application,
+   and useful academic vocabulary in the user's request.
+2. Create a short `technical_focus` that contains the actual subject without
+   generic context words. Examples: `suspension geometry optimization`,
+   `chassis fatigue finite element analysis`, or
+   `telemetry data acquisition sensors CAN`.
+3. Build approximately three to five complementary queries. Use English
+   technical terminology when useful, but include Portuguese repository terms
+   when they can retrieve Brazilian TCCs. Start narrow and broaden carefully:
+   Baja SAE or Mini Baja, then Formula SAE/Formula Student, ATV/off-road, and
+   finally the relevant vehicle-engineering domain. Do not broaden away from
+   the requested technical focus.
+4. Call `search_academic_papers` once with the complete query list,
+   `technical_focus`, the requested final `limit`, and
+   `document_preference=long_form_first`. The limit is the final number of
+   recommendations, not the number requested from each source.
+5. Use `document_preference=articles_first` only when the user explicitly
+   prioritizes articles. Keep `exclude_electric_vehicles=true` unless the user
+   explicitly asks for EV, hybrid, battery, or fuel-cell literature.
+6. Inspect the returned `policy`, `sources`, `warnings`, `filters_applied`, and
+   each record's access fields. Never recover a rejected URL from raw metadata
+   or from memory.
+7. Use `get_paper` for a known item, `find_related_papers` for follow-up
+   discovery, `format_citation` for ABNT/BibTeX, and
+   `research_cache_stats` for diagnostics.
+
+## Response format
+
+Answer in the user's language. For chat or WhatsApp, list at most five works
+by default, even when the tool found more. For each work, show only source data:
+
+1. exact title;
+2. shortened author list;
+3. year;
+4. document type and institution or venue, when returned;
+5. DOI, when returned;
+6. the verified free-PDF link from `full_text_url`;
+7. one short sentence explaining why it is relevant. Mark that final sentence
+   as your interpretation rather than bibliographic metadata.
+
+Do not paste complete abstracts. State how many additional qualifying results
+exist using `more_available`. If fewer works than requested survived, say that
+the plugin preferred returning fewer results over including off-topic,
+paywalled, unverified, or EV material. Briefly disclose every source reported
+as unavailable, rate-limited, or degraded.
 
 ## Bibliographic truth rules
 
-- Titles, authors, years, venues, DOI, citation counts, URLs, and open-access
-  claims must come from tool output. Never fill them from memory.
-- Never invent a plausible DOI, citation count, author, URL, or paper.
-- Treat `source`/`sources`, `source_scores`, and API status as data from the
-  tools. A relevance explanation is an LLM interpretation and should be
-  phrased as such.
-- If a field is absent, say it was not returned. Do not infer that a paper is
-   open access merely because a DOI or publisher page exists.
-- A DOI is a bibliographic identifier returned by a source; only expose a
-  publisher/repository URL when the tool marks it as verified. Never copy a
-  stale or unverified URL from a raw source payload.
-- By default, recommend only records with a source-provided open-access URL
-  that passes link validation. A DOI or publisher landing page alone is not
-  evidence that the full text is free. If the user explicitly requests a
-  paywalled paper or EV literature, pass the corresponding opt-out flag and
-  state that the default filter was relaxed.
-- If one source is rate-limited or unavailable, use the remaining results and
-  briefly disclose the partial availability. Do not imply that all three
-  sources answered.
-- If no paper is returned, say that the configured sources did not find a
-  usable result and suggest a query refinement; do not answer with invented
-  references.
+- Titles, authors, years, document types, institutions, venues, DOI, citation
+  counts, and URLs must come from the current tool output. Never fill a missing
+  field from memory and never invent a plausible value.
+- Treat `sources`, access verification, filters, and API status as source data.
+  Treat your explanation of practical relevance as LLM interpretation, and
+  phrase it accordingly.
+- A missing field means "not returned". Do not infer open access from a DOI,
+  repository page, filename, or source label.
+- Print `full_text_url` as the access link only when the result says
+  `access_status=verified_pdf`. Do not replace it with `url` or a DOI landing
+  page.
+- If no qualifying work is returned, report that honestly and suggest a more
+  precise technical focus or a broader Baja/Formula/off-road formulation. Do
+  not substitute unverified references.
+- If an academic source fails, use results from healthy sources and identify
+  the partial failure. Do not claim that every configured source answered.
