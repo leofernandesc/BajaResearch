@@ -116,15 +116,19 @@ automaticamente. Se `httpx` não estiver no venv do Hermes:
 Depois de ativar o plugin, o teste de ponta a ponta no chat é:
 
 ```bash
-hermes chat -q "Encontre trabalhos acadêmicos sobre fadiga de chassis tubular para Baja SAE e veículos off-road."
+hermes chat -s baja-research:baja-research -q "Encontre trabalhos acadêmicos sobre fadiga de chassis tubular para Baja SAE e veículos off-road."
 ```
 
-O Hermes deve expandir a pergunta para cerca de três a cinco consultas em
-inglês técnico e chamar `search_academic_papers`. Para conferir a ferramenta
-sem depender da conversa, use:
+Na API atual, skills fornecidas por plugins são explicitamente carregadas com o
+nome qualificado `<plugin>:<skill>`. Com a skill carregada, o Hermes deve
+expandir a pergunta para cerca de três a cinco consultas em inglês técnico e
+chamar `search_academic_papers`. O plugin também deixa o toolset
+`baja_research` disponível no catálogo padrão após a ativação; o `-s` acima
+torna o primeiro teste determinístico. Para conferir a ferramenta em modo
+one-shot, use:
 
 ```bash
-hermes -z "Use search_academic_papers para buscar: telemetry data acquisition Formula SAE; retorne os cinco melhores resultados e informe qualquer fonte indisponível."
+hermes -s baja-research:baja-research -z "Use search_academic_papers para buscar: telemetry data acquisition Formula SAE; retorne os cinco melhores resultados e informe qualquer fonte indisponível."
 ```
 
 No resultado, título, autores, ano, DOI, citações e URLs devem aparecer apenas
