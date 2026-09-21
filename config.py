@@ -15,8 +15,10 @@ class ResearchConfig:
     openalex_api_key: str | None = None
     semantic_scholar_api_key: str | None = None
     crossref_mailto: str | None = None
-    validate_links: bool = True
-    link_timeout_seconds: float = 6.0
+    access_timeout_seconds: float = 8.0
+    access_valid_ttl_hours: float = 168.0
+    access_invalid_ttl_hours: float = 24.0
+    access_temporary_ttl_hours: float = 1.0
 
 
 def _env_float(name: str, default: float) -> float:
@@ -31,13 +33,6 @@ def _env_int(name: str, default: int) -> int:
         return max(0, min(4, int(os.getenv(name, str(default)))))
     except (TypeError, ValueError):
         return default
-
-
-def _env_bool(name: str, default: bool) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _context_setting(ctx: Any, name: str, default: Any) -> Any:
@@ -69,9 +64,17 @@ def config_from_context(ctx: Any) -> ResearchConfig:
         openalex_api_key=os.getenv("OPENALEX_API_KEY") or None,
         semantic_scholar_api_key=os.getenv("SEMANTIC_SCHOLAR_API_KEY") or None,
         crossref_mailto=os.getenv("CROSSREF_MAILTO") or None,
-        validate_links=_env_bool("BAJA_RESEARCH_VALIDATE_LINKS", True),
-        link_timeout_seconds=_env_float(
-            "BAJA_RESEARCH_LINK_TIMEOUT_SECONDS", 6.0
+        access_timeout_seconds=_env_float(
+            "BAJA_RESEARCH_ACCESS_TIMEOUT_SECONDS", 8.0
+        ),
+        access_valid_ttl_hours=_env_float(
+            "BAJA_RESEARCH_ACCESS_VALID_TTL_HOURS", 168.0
+        ),
+        access_invalid_ttl_hours=_env_float(
+            "BAJA_RESEARCH_ACCESS_INVALID_TTL_HOURS", 24.0
+        ),
+        access_temporary_ttl_hours=_env_float(
+            "BAJA_RESEARCH_ACCESS_TEMPORARY_TTL_HOURS", 1.0
         ),
     )
 

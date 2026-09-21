@@ -3,7 +3,7 @@ import httpx
 from clients.base import SourceError
 from clients.crossref import CrossrefClient
 from clients.http import JsonHttpClient
-from clients.link_validator import LinkValidator
+from clients.link_validator import AccessCheck, LinkValidator
 from clients.openalex import OpenAlexClient
 from clients.semantic_scholar import SemanticScholarClient
 from models import Paper
@@ -104,19 +104,24 @@ def test_crossref_does_not_claim_open_access_without_license():
     assert paper.open_access_url is None
 
 
-def test_link_validator_rejects_dead_link_and_accepts_head_405_get():
+def test_pdf_verifier_rejects_dead_link_and_accepts_pdf_bytes():
     calls = []
 
     def handler(request):
         calls.append((request.method, str(request.url)))
         if request.url.path == "/dead":
             return httpx.Response(404, request=request)
-        if request.method == "HEAD":
-            return httpx.Response(405, request=request)
-        return httpx.Response(206, request=request)
+        return httpx.Response(
+            206,
+            headers={"Content-Type": "application/pdf"},
+            content=b"%PDF-1.7 test",
+            request=request,
+        )
 
-    client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
-    validator = LinkValidator(http_client=client)
+    client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=False)
+    validator = LinkValidator(
+        http_client=client, resolver=lambda _host, _port: ["8.8.8.8"]
+    )
     try:
         dead = validator.check("https://example.test/dead")
         live = validator.check("https://example.test/live")
@@ -125,10 +130,98 @@ def test_link_validator_rejects_dead_link_and_accepts_head_405_get():
         client.close()
     assert dead.status == "invalid"
     assert dead.http_status == 404
-    assert live.status == "valid"
+    assert live.status == "verified_pdf"
     assert live.http_status == 206
-    assert ("HEAD", "https://example.test/live") in calls
     assert ("GET", "https://example.test/live") in calls
+
+
+def test_pdf_verifier_rejects_publisher_html_landing_page():
+    def handler(request):
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/html"},
+            content=b"<html><title>Buy access</title></html>",
+            request=request,
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    validator = LinkValidator(
+        http_client=client, resolver=lambda _host, _port: ["8.8.8.8"]
+    )
+    try:
+        result = validator.check("https://publisher.example/article")
+    finally:
+        validator.close()
+        client.close()
+    assert result.status == "invalid"
+    assert result.reason == "response_is_not_pdf"
+
+
+def test_pdf_verifier_blocks_private_redirect_target():
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        return httpx.Response(
+            302, headers={"Location": "http://127.0.0.1/private.pdf"}, request=request
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    validator = LinkValidator(
+        http_client=client,
+        resolver=lambda host, _port: ["127.0.0.1" if host == "127.0.0.1" else "8.8.8.8"],
+    )
+    try:
+        result = validator.check("https://repository.example/document")
+    finally:
+        validator.close()
+        client.close()
+    assert result.status == "blocked"
+    assert result.reason == "private_network_target"
+    assert calls == ["https://repository.example/document"]
+
+
+def test_pdf_verification_evidence_is_reused_from_sqlite(tmp_path):
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "application/pdf"},
+            content=b"%PDF-1.7 cached",
+            request=request,
+        )
+
+    storage = ResearchStorage(tmp_path / "research.sqlite3")
+    first_client = httpx.Client(transport=httpx.MockTransport(handler))
+    first = LinkValidator(
+        http_client=first_client,
+        resolver=lambda _host, _port: ["8.8.8.8"],
+        storage=storage,
+    )
+    try:
+        assert first.check("https://repository.example/document.pdf").status == "verified_pdf"
+    finally:
+        first.close()
+        first_client.close()
+
+    def should_not_run(_request):
+        raise AssertionError("persistent access cache was not used")
+
+    second_client = httpx.Client(transport=httpx.MockTransport(should_not_run))
+    second = LinkValidator(
+        http_client=second_client,
+        resolver=lambda _host, _port: ["8.8.8.8"],
+        storage=storage,
+    )
+    try:
+        cached = second.check("https://repository.example/document.pdf")
+    finally:
+        second.close()
+        second_client.close()
+    assert cached.status == "verified_pdf"
+    assert calls == ["https://repository.example/document.pdf"]
 
 
 class _FakeClient:

@@ -105,7 +105,11 @@ class ResearchService:
             }
         )
         self.link_validator = link_validator or LinkValidator(
-            timeout=self.config.link_timeout_seconds
+            timeout=self.config.access_timeout_seconds,
+            storage=self.storage,
+            valid_ttl_hours=self.config.access_valid_ttl_hours,
+            invalid_ttl_hours=self.config.access_invalid_ttl_hours,
+            temporary_ttl_hours=self.config.access_temporary_ttl_hours,
         )
         self.last_status: dict[str, Any] = {}
 
@@ -129,41 +133,70 @@ class ResearchService:
         self.link_validator.close()
 
     def _validate_papers(self, papers: list[Paper]) -> None:
-        """Mark only successfully reachable links as public output links."""
-        if not self.config.validate_links or not papers:
+        """Attach a public URL only after anonymous PDF-byte verification."""
+        if not papers:
             return
         urls = [
             url
             for paper in papers
-            for url in (paper.url, paper.open_access_url)
+            for url in paper.candidate_full_text_urls()
             if url
         ]
         checks = self.link_validator.check_many(urls)
-        counts: dict[str, int] = {"valid": 0, "invalid": 0, "unknown": 0}
+        counts: dict[str, int] = {
+            "verified_pdf": 0,
+            "invalid": 0,
+            "temporary_error": 0,
+            "blocked": 0,
+        }
         for paper in papers:
-            for field, raw_url in (
-                ("url", paper.url),
-                ("open_access_url", paper.open_access_url),
-            ):
-                if not raw_url:
-                    paper.link_status[field] = "not_provided"
-                    continue
+            attempts = []
+            verified = None
+            for raw_url in paper.candidate_full_text_urls():
                 check = checks.get(raw_url)
-                status = check.status if check is not None else "unknown"
-                paper.link_status[field] = status
-                if status == "valid":
-                    verified = check.final_url or raw_url
-                    if field == "url":
-                        paper.verified_url = verified
-                    else:
-                        paper.verified_open_access_url = verified
-                counts[status] = counts.get(status, 0) + 1
+                if check is None:
+                    continue
+                attempts.append(check.to_dict() if hasattr(check, "to_dict") else {
+                    "status": check.status,
+                    "url": raw_url,
+                    "final_url": getattr(check, "final_url", None),
+                })
+                counts[check.status] = counts.get(check.status, 0) + 1
+                if check.status == "verified_pdf":
+                    verified = check
+                    break
+            if verified is not None:
+                paper.access_status = "verified_pdf"
+                paper.full_text_url = verified.final_url or verified.url
+                paper.access_verified_at = getattr(verified, "checked_at", None) or datetime.now(
+                    timezone.utc
+                ).isoformat()
+                paper.access_evidence = dict(getattr(verified, "evidence", {}) or {})
+                paper.access_evidence["attempts"] = attempts
+                # Legacy fields remain readable by older cached records.
+                paper.link_status["open_access_url"] = "valid"
+                paper.verified_open_access_url = paper.full_text_url
+            else:
+                statuses = [attempt.get("status") for attempt in attempts]
+                paper.access_status = (
+                    "temporary_error"
+                    if "temporary_error" in statuses
+                    else "blocked"
+                    if "blocked" in statuses
+                    else "invalid"
+                    if attempts
+                    else "not_provided"
+                )
+                paper.full_text_url = None
+                paper.access_evidence = {"attempts": attempts}
+                paper.link_status["open_access_url"] = paper.access_status
         logger.info(
-            "event=link_validation checked=%d valid=%d invalid=%d unknown=%d",
+            "event=pdf_access_verification checked=%d verified_pdf=%d invalid=%d temporary=%d blocked=%d",
             len(urls),
-            counts.get("valid", 0),
+            counts.get("verified_pdf", 0),
             counts.get("invalid", 0),
-            counts.get("unknown", 0),
+            counts.get("temporary_error", 0),
+            counts.get("blocked", 0),
         )
 
     @staticmethod
@@ -223,11 +256,6 @@ class ResearchService:
             final = ranked[:limit]
             self._validate_papers(final)
             return final, 0
-        if not self.config.validate_links:
-            # Explicit diagnostic mode: source-provided OA evidence is still
-            # required, but link verification has been intentionally disabled.
-            return ranked[:limit], 0
-
         # Validate a bounded ranked window so dead repository records can be
         # skipped without issuing a request for every raw source result.
         candidate_window = ranked[: min(len(ranked), max(40, limit * 8))]
@@ -235,7 +263,7 @@ class ResearchService:
         usable = [
             paper
             for paper in candidate_window
-            if paper.link_status.get("open_access_url") == "valid"
+            if paper.access_status == "verified_pdf" and paper.full_text_url
         ]
         rejected = len(candidate_window) - len(usable)
         return usable[:limit], rejected
@@ -405,7 +433,7 @@ class ResearchService:
                     cached_papers = [
                         paper
                         for paper in cached_papers
-                        if paper.link_status.get("open_access_url") == "valid"
+                        if paper.access_status == "verified_pdf" and paper.full_text_url
                     ]
                 self.storage.upsert_papers(cached_papers)
                 logger.info("event=academic_search cache=hit returned=%d", len(cached_papers))

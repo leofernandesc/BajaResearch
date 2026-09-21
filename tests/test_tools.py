@@ -1,6 +1,7 @@
 import json
 
 from models import Paper
+from clients.link_validator import AccessCheck
 from storage import ResearchStorage
 from tools import ResearchConfig, ResearchService, build_tool_handlers
 
@@ -136,10 +137,28 @@ def test_open_access_is_the_default_recommendation_filter(tmp_path):
     }
     for client in clients.values():
         client.papers = [open_paper, paywalled]
+    class StubPdfVerifier:
+        def check_many(self, urls):
+            return {
+                url: AccessCheck(
+                    "verified_pdf",
+                    url,
+                    final_url=url,
+                    http_status=200,
+                    content_type="application/pdf",
+                    evidence={"pdf_magic": True},
+                )
+                for url in urls
+            }
+
+        def close(self):
+            pass
+
     service = ResearchService(
-        config=ResearchConfig(cache_ttl_hours=0, validate_links=False),
+        config=ResearchConfig(cache_ttl_hours=0),
         storage=ResearchStorage(tmp_path / "cache.sqlite3"),
         clients=clients,
+        link_validator=StubPdfVerifier(),
     )
     result = service.search(queries=["Baja SAE telemetry"], limit=5)
     titles = [item["title"] for item in result["results"]]
@@ -173,14 +192,14 @@ def test_unreachable_open_access_link_is_not_recommended(tmp_path):
     class StubLinkValidator:
         def check_many(self, urls):
             return {
-                url: type(
-                    "Check",
-                    (),
-                    {
-                        "status": "valid" if url.endswith("thesis.pdf") else "invalid",
-                        "final_url": url,
-                    },
-                )()
+                url: AccessCheck(
+                    "verified_pdf" if url.endswith("thesis.pdf") else "invalid",
+                    url,
+                    final_url=url,
+                    http_status=200 if url.endswith("thesis.pdf") else 404,
+                    content_type="application/pdf" if url.endswith("thesis.pdf") else None,
+                    evidence={"pdf_magic": url.endswith("thesis.pdf")},
+                )
                 for url in urls
             }
 
