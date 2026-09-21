@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 import logging
-import os
 from pathlib import Path
-import re
 from typing import Any, Callable, Iterable, Mapping
 
 try:
@@ -18,7 +15,10 @@ try:
     from .clients.link_validator import LinkValidator
     from .clients.openalex import OpenAlexClient
     from .clients.semantic_scholar import SemanticScholarClient
+    from .citations import format_abnt, format_bibtex
+    from .config import ResearchConfig, config_from_context
     from .models import Paper, deduplicate_papers, merge_papers, normalize_doi
+    from .querying import expand_plugin_queries
     from .ranking import is_electric_vehicle_paper, rank_papers
     from .schemas import (
         CITATION_SCHEMA,
@@ -38,7 +38,10 @@ except ImportError:  # pragma: no cover - direct module imports
     from clients.link_validator import LinkValidator
     from clients.openalex import OpenAlexClient
     from clients.semantic_scholar import SemanticScholarClient
+    from citations import format_abnt, format_bibtex
+    from config import ResearchConfig, config_from_context
     from models import Paper, deduplicate_papers, merge_papers, normalize_doi
+    from querying import expand_plugin_queries
     from ranking import is_electric_vehicle_paper, rank_papers
     from schemas import (
         CITATION_SCHEMA,
@@ -57,76 +60,6 @@ except ImportError:  # pragma: no cover - direct module imports
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
-class ResearchConfig:
-    cache_ttl_hours: float = 24.0
-    request_timeout_seconds: float = 15.0
-    max_retries: int = 2
-    openalex_api_key: str | None = None
-    semantic_scholar_api_key: str | None = None
-    crossref_mailto: str | None = None
-    validate_links: bool = True
-    link_timeout_seconds: float = 6.0
-
-
-def _env_float(name: str, default: float) -> float:
-    try:
-        return max(0.0, float(os.getenv(name, str(default))))
-    except (TypeError, ValueError):
-        return default
-
-
-def _env_int(name: str, default: int) -> int:
-    try:
-        return max(0, min(4, int(os.getenv(name, str(default)))))
-    except (TypeError, ValueError):
-        return default
-
-
-def _env_bool(name: str, default: bool) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _context_setting(ctx: Any, name: str, default: Any) -> Any:
-    try:
-        value = ctx.get_config(name, default=default)
-        return default if value is None else value
-    except Exception:
-        return default
-
-
-def _config_from_context(ctx: Any) -> ResearchConfig:
-    context_ttl = _context_setting(ctx, "cache_ttl_hours", 24)
-    context_timeout = _context_setting(ctx, "request_timeout_seconds", 15)
-    try:
-        context_ttl = float(context_ttl)
-    except (TypeError, ValueError):
-        context_ttl = 24.0
-    try:
-        context_timeout = float(context_timeout)
-    except (TypeError, ValueError):
-        context_timeout = 15.0
-    return ResearchConfig(
-        cache_ttl_hours=_env_float(
-            "BAJA_RESEARCH_CACHE_TTL_HOURS",
-            context_ttl,
-        ),
-        request_timeout_seconds=_env_float(
-            "BAJA_RESEARCH_REQUEST_TIMEOUT_SECONDS",
-            context_timeout,
-        ),
-        max_retries=_env_int("BAJA_RESEARCH_MAX_RETRIES", 2),
-        openalex_api_key=os.getenv("OPENALEX_API_KEY") or None,
-        semantic_scholar_api_key=os.getenv("SEMANTIC_SCHOLAR_API_KEY") or None,
-        crossref_mailto=os.getenv("CROSSREF_MAILTO") or None,
-        validate_links=_env_bool("BAJA_RESEARCH_VALIDATE_LINKS", True),
-        link_timeout_seconds=_env_float("BAJA_RESEARCH_LINK_TIMEOUT_SECONDS", 6.0),
-    )
-
-
 def _cache_key(queries: list[str], filters: Mapping[str, Any]) -> str:
     return json.dumps(
         {"queries": queries, "filters": dict(filters)},
@@ -134,47 +67,6 @@ def _cache_key(queries: list[str], filters: Mapping[str, Any]) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
-
-
-_BAJA_CONTEXT_MARKERS = (
-    "baja", "formula sae", "formula student", "off road", "off-road", "offroad",
-    "atv", "automotive", "vehicle", "motorsport", "telemetry", "can bus",
-)
-_THESIS_QUERY_MARKERS = (
-    "thesis", "dissertation", "tcc", "monograph", "monografia",
-    "undergraduate thesis", "master thesis", "doctoral thesis",
-    "institutional repository", "repository", "repositorio",
-)
-
-
-def _expand_plugin_queries(
-    queries: list[str], *, baja_context: bool, prefer_theses: bool
-) -> list[str]:
-    """Add conservative retrieval guards without replacing LLM expansion.
-
-    Hermes still owns the semantic expansion. These additions protect the
-    plugin when a broad request such as ``electronics`` reaches the tool
-    without any Baja/vehicle context or a thesis-oriented variant.
-    """
-    expanded = list(queries)
-    joined = " ".join(expanded).casefold()
-    base = expanded[0]
-    if baja_context and not any(marker in joined for marker in _BAJA_CONTEXT_MARKERS):
-        expanded.extend(
-            (
-                f"Baja SAE {base}",
-                f"{base} off-road vehicle Formula SAE",
-            )
-        )
-    joined = " ".join(expanded).casefold()
-    if prefer_theses and not any(marker in joined for marker in _THESIS_QUERY_MARKERS):
-        expanded.extend(
-            (
-                f"{base} Baja SAE thesis dissertation",
-                f"{base} off-road vehicle undergraduate thesis institutional repository",
-            )
-        )
-    return list(dict.fromkeys(expanded))[:8]
 
 
 class ResearchService:
@@ -219,7 +111,7 @@ class ResearchService:
 
     @classmethod
     def from_hermes_context(cls, ctx: Any) -> "ResearchService":
-        config = _config_from_context(ctx)
+        config = config_from_context(ctx)
         data_dir = Path(ctx.state.data_dir)
         storage = ResearchStorage(
             data_dir / "baja_research.sqlite3", ttl_hours=config.cache_ttl_hours
@@ -489,7 +381,7 @@ class ResearchService:
         original_query: str | None = None,
         refresh_cache: bool = False,
     ) -> dict[str, Any]:
-        effective_queries = _expand_plugin_queries(
+        effective_queries = expand_plugin_queries(
             queries, baja_context=baja_context, prefer_theses=prefer_theses
         )
         filters = {
@@ -785,7 +677,7 @@ class ResearchService:
                 "warnings": warnings,
                 "error": {"code": "paper_not_found", "message": "Cannot cite a paper that was not found."},
             }
-        citation = _format_abnt(paper) if style == "abnt" else _format_bibtex(paper)
+        citation = format_abnt(paper) if style == "abnt" else format_bibtex(paper)
         return {
             "ok": True,
             "style": style,
@@ -807,56 +699,6 @@ class ResearchService:
         }
         result["last_observed_api_status"] = self.last_status or result.get("last_source_status", {})
         return {"ok": True, **result}
-
-
-def _author_for_bibtex(name: str) -> str:
-    return name.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
-
-
-def _bibtex_value(value: str) -> str:
-    return value.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
-
-
-def _format_abnt(paper: Paper) -> str:
-    parts: list[str] = []
-    if paper.authors:
-        parts.append("; ".join(paper.authors))
-    if paper.title:
-        parts.append(paper.title)
-    if paper.venue:
-        parts.append(paper.venue)
-    if paper.year is not None:
-        parts.append(str(paper.year))
-    if paper.doi:
-        parts.append(f"DOI: {paper.doi}")
-    else:
-        public_url = paper.to_dict(compact=True).get("url")
-        if public_url:
-            parts.append(f"Disponível em: {public_url}")
-    return ". ".join(parts) + ("." if parts else "")
-
-
-def _format_bibtex(paper: Paper) -> str:
-    first_author = paper.authors[0].split()[-1].lower() if paper.authors else "paper"
-    slug = re.sub(r"[^a-z0-9]+", "", first_author) or "paper"
-    key = f"{slug}{paper.year or ''}"
-    fields: list[tuple[str, str]] = [("title", paper.title)]
-    if paper.authors:
-        fields.append(("author", " and ".join(_author_for_bibtex(author) for author in paper.authors)))
-    if paper.year is not None:
-        fields.append(("year", str(paper.year)))
-    if paper.venue:
-        fields.append(("journal", paper.venue))
-    if paper.doi:
-        fields.append(("doi", paper.doi))
-    else:
-        public_url = paper.to_dict(compact=True).get("url")
-        if public_url:
-            fields.append(("url", public_url))
-    lines = [f"@article{{{key},"]
-    lines.extend(f"  {name} = {{{_bibtex_value(value)}}}," for name, value in fields)
-    lines.append("}")
-    return "\n".join(lines)
 
 
 def _tool_error(message: str, code: str = "invalid_arguments") -> str:

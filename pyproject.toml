@@ -22,7 +22,10 @@ addopts = "-q"
 [tool.setuptools]
 py-modules = [
   "__init__",
+  "citations",
+  "config",
   "models",
+  "querying",
   "ranking",
   "schemas",
   "storage",
