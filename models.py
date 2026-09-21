@@ -332,6 +332,9 @@ class Paper:
             "full_text_url": full_text_url,
             "access_status": self.access_status,
             "access_verified_at": self.access_verified_at,
+            "document_class": (
+                "long_form" if is_long_form_document(self.document_type) else "article_or_other"
+            ),
             "topics": self.topics[:20],
             "sources": self.sources,
             "source_scores": self.source_scores,
@@ -340,10 +343,16 @@ class Paper:
             result.pop("abstract")
             if self.abstract:
                 result["abstract_snippet"] = self.abstract[:700]
-        if self.link_status:
+        if self.link_status and not compact:
             result["link_verification"] = dict(self.link_status)
-        if self.access_evidence:
+        if self.access_evidence and not compact:
             result["access_evidence"] = dict(self.access_evidence)
+        elif self.access_evidence:
+            result["access_verification"] = {
+                key: self.access_evidence[key]
+                for key in ("method", "anonymous", "pdf_magic", "bytes_sampled")
+                if key in self.access_evidence
+            }
         if self.ranking_score is not None:
             result["ranking_score"] = round(float(self.ranking_score), 6)
         if self.score_details:
@@ -360,6 +369,19 @@ class Paper:
             result["provenance"] = self.provenance
         if self.ranking_version:
             result["ranking_version"] = self.ranking_version
+        reasons: list[str] = []
+        if is_long_form_document(self.document_type):
+            reasons.append("long_form_document")
+        if self.score_details.get("technical_relevance", 0.0) >= 0.65:
+            reasons.append("strong_technical_match")
+        if self.score_details.get("application_context", 0.0) >= 0.70:
+            reasons.append("baja_formula_offroad_context")
+        if len(set(self.sources)) > 1:
+            reasons.append("confirmed_by_multiple_sources")
+        if self.access_status == "verified_pdf":
+            reasons.append("verified_free_pdf")
+        if reasons:
+            result["relevance_reasons"] = reasons
         return result
 
     def to_storage_dict(self) -> dict[str, Any]:
@@ -417,9 +439,11 @@ def _identity_ids(paper: Paper) -> set[str]:
 
 def _title_year_key(paper: Paper) -> str | None:
     title = normalize_title(paper.title)
-    if not title or paper.year is None:
+    if not title:
         return None
-    return f"{title}|{paper.year}"
+    # Exact normalized titles are safe enough to collapse when a repository
+    # omitted the year. Fuzzy matching still requires the same known year.
+    return f"{title}|{paper.year if paper.year is not None else 'unknown'}"
 
 
 def _best_source(paper: Paper) -> str:

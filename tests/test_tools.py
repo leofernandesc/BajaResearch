@@ -11,7 +11,7 @@ class FakeClient:
 
     def __init__(self):
         self.calls = 0
-        self.paper = Paper("", "Formula Student chassis", year=2022, doi="10.1000/formula", authors=["A. Author"], sources=["openalex"], source_scores={"openalex": .6})
+        self.paper = Paper("", "Formula Student chassis", year=2022, doi="10.1000/formula", authors=["A. Author"], open_access_url="https://repository.example/formula.pdf", sources=["openalex"], source_scores={"openalex": .6})
         self.papers = [self.paper]
 
     def search(self, query, **kwargs):
@@ -28,15 +28,41 @@ class FakeClient:
         pass
 
 
+class AcceptAllPdfVerifier:
+    def check_many(self, urls):
+        return {
+            url: AccessCheck(
+                "verified_pdf",
+                url,
+                final_url=url,
+                http_status=206,
+                content_type="application/pdf",
+                evidence={"pdf_magic": True, "anonymous": True},
+            )
+            for url in urls
+        }
+
+    def check(self, url):
+        return self.check_many([url])[url]
+
+    def close(self):
+        pass
+
+
 def test_tool_handlers_return_compact_json_and_cache_hits(tmp_path):
     clients = {name: FakeClient() for name in ("openalex", "semantic_scholar", "crossref")}
     service = ResearchService(
         config=ResearchConfig(cache_ttl_hours=24),
         storage=ResearchStorage(tmp_path / "cache.sqlite3"),
         clients=clients,
+        link_validator=AcceptAllPdfVerifier(),
     )
     handlers = {name: handler for name, _schema, handler, _description in build_tool_handlers(service)}
-    args = {"queries": ["Formula Student chassis"], "limit": 2, "open_access_only": False}
+    args = {
+        "queries": ["Formula Student chassis"],
+        "technical_focus": "chassis",
+        "limit": 2,
+    }
     first = json.loads(handlers["search_academic_papers"](args))
     second = json.loads(handlers["search_academic_papers"](args))
     assert first["ok"] is True
@@ -54,6 +80,10 @@ def test_invalid_tool_arguments_are_structured():
     response = json.loads(handlers["search_academic_papers"]({"queries": []}))
     assert response["ok"] is False
     assert response["error"]["code"] == "invalid_arguments"
+    missing_focus = json.loads(
+        handlers["search_academic_papers"]({"queries": ["Baja SAE chassis"]})
+    )
+    assert missing_focus["error"]["code"] == "invalid_arguments"
 
 
 def test_broad_query_gets_baja_and_thesis_retrieval_variants(tmp_path):
@@ -62,13 +92,14 @@ def test_broad_query_gets_baja_and_thesis_retrieval_variants(tmp_path):
         config=ResearchConfig(cache_ttl_hours=24),
         storage=ResearchStorage(tmp_path / "cache.sqlite3"),
         clients=clients,
+        link_validator=AcceptAllPdfVerifier(),
     )
-    result = service.search(queries=["electronics"], limit=1, open_access_only=False)
+    result = service.search(queries=["electronics"], technical_focus="electronics telemetry", limit=1)
     assert "Baja SAE electronics" in result["queries"]
     assert "electronics off-road vehicle Formula SAE" in result["queries"]
     assert any("thesis" in query for query in result["queries"])
-    assert result["filters"]["baja_context"] is True
-    assert result["filters"]["prefer_theses"] is True
+    assert result["filters"]["baja_context_required"] is True
+    assert result["filters"]["document_preference"] == "long_form_first"
 
 
 def test_electric_vehicle_results_are_excluded_by_default(tmp_path):
@@ -85,6 +116,7 @@ def test_electric_vehicle_results_are_excluded_by_default(tmp_path):
         "Baja SAE vehicle telemetry and data acquisition",
         abstract="Telemetry and sensors for an off-road Baja vehicle.",
         year=2023,
+        open_access_url="https://repository.example/baja-telemetry.pdf",
         sources=["openalex"],
         source_scores={"openalex": 0.7},
     )
@@ -106,8 +138,11 @@ def test_electric_vehicle_results_are_excluded_by_default(tmp_path):
         config=ResearchConfig(cache_ttl_hours=0),
         storage=ResearchStorage(tmp_path / "cache.sqlite3"),
         clients=clients,
+        link_validator=AcceptAllPdfVerifier(),
     )
-    result = service.search(queries=["electronics"], limit=5, open_access_only=False)
+    result = service.search(
+        queries=["electronics"], technical_focus="electronics telemetry", limit=5
+    )
     titles = [item["title"] for item in result["results"]]
     assert baja.title in titles
     assert ev.title not in titles
@@ -162,9 +197,35 @@ def test_open_access_is_the_default_recommendation_filter(tmp_path):
     )
     result = service.search(queries=["Baja SAE telemetry"], limit=5)
     titles = [item["title"] for item in result["results"]]
-    assert result["filters"]["open_access_only"] is True
+    assert result["filters"]["free_full_text_only"] is True
     assert open_paper.title in titles
     assert paywalled.title not in titles
+
+
+def test_free_pdf_policy_cannot_be_disabled_by_direct_legacy_flag(tmp_path):
+    paywalled = Paper(
+        "",
+        "Baja SAE suspension optimization",
+        document_type="article",
+        url="https://publisher.example/paywall",
+        sources=["openalex"],
+    )
+    clients = {name: FakeClient() for name in ("openalex", "semantic_scholar", "crossref")}
+    for client in clients.values():
+        client.papers = [paywalled]
+    service = ResearchService(
+        config=ResearchConfig(cache_ttl_hours=0),
+        storage=ResearchStorage(tmp_path / "cache.sqlite3"),
+        clients=clients,
+    )
+    result = service.search(
+        queries=["Baja SAE suspension optimization"],
+        technical_focus="suspension",
+        limit=3,
+        open_access_only=False,
+    )
+    assert result["returned"] == 0
+    assert result["policy"]["free_full_text_only"] is True
 
 
 def test_unreachable_open_access_link_is_not_recommended(tmp_path):
@@ -280,3 +341,16 @@ def test_long_form_verified_work_is_listed_before_article(tmp_path):
         article.title,
     ]
     assert all(paper["access_status"] == "verified_pdf" for paper in result["results"])
+    assert "verified_free_pdf" in result["results"][0]["relevance_reasons"]
+
+    articles_first = service.search(
+        queries=["Baja SAE suspension optimization"],
+        technical_focus="suspension optimization",
+        document_preference="articles_first",
+        limit=2,
+        refresh_cache=True,
+    )
+    assert [paper["title"] for paper in articles_first["results"]] == [
+        article.title,
+        thesis.title,
+    ]

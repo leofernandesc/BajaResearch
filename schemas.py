@@ -12,7 +12,7 @@ except ImportError:  # pragma: no cover - direct test imports
 
 SEARCH_SCHEMA = {
     "name": "search_academic_papers",
-    "description": "Search real academic literature across OpenAlex, Semantic Scholar, and Crossref; return normalized and ranked papers.",
+    "description": "Search real Baja/Formula/off-road academic literature across open repositories and academic APIs; return only anonymously verified full-text PDFs.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -23,6 +23,11 @@ SEARCH_SCHEMA = {
                 "maxItems": 8,
                 "description": "One to eight complementary academic queries, preferably in technical English.",
             },
+            "technical_focus": {
+                "type": "string",
+                "minLength": 2,
+                "description": "Explicit engineering or management focus, without generic Baja context; for example 'suspension geometry optimization' or 'telemetry data acquisition sensors CAN'.",
+            },
             "limit": {
                 "type": "integer",
                 "minimum": 1,
@@ -32,30 +37,21 @@ SEARCH_SCHEMA = {
             },
             "year_from": {"type": ["integer", "null"], "minimum": 1000, "maximum": 2200},
             "year_to": {"type": ["integer", "null"], "minimum": 1000, "maximum": 2200},
-            "open_access_only": {
-                "type": "boolean",
-                "default": True,
-                "description": "Return only papers with a source-provided open-access record and a verified access URL.",
-            },
             "exclude_electric_vehicles": {
                 "type": "boolean",
                 "default": True,
                 "description": "Exclude papers primarily about electric, hybrid or fuel-cell vehicles unless explicitly disabled.",
             },
-            "prefer_theses": {
-                "type": "boolean",
-                "default": True,
-                "description": "Prefer theses, dissertations, monographs and institutional-repository work when available.",
-            },
-            "baja_context": {
-                "type": "boolean",
-                "default": True,
-                "description": "Keep Baja SAE, Formula SAE, off-road or automotive context in the search expansion and ranking.",
+            "document_preference": {
+                "type": "string",
+                "enum": ["long_form_first", "articles_first"],
+                "default": "long_form_first",
+                "description": "Put TCCs, dissertations, theses and monographs first by default; use articles_first only when explicitly requested.",
             },
             "original_query": {"type": ["string", "null"], "description": "The user's original question, when useful for diagnostics."},
             "refresh_cache": {"type": "boolean", "default": False, "description": "Ignore a fresh identical search cache entry."},
         },
-        "required": ["queries"],
+        "required": ["queries", "technical_focus"],
         "additionalProperties": False,
     },
 }
@@ -131,6 +127,9 @@ def validate_search_args(args: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("queries must contain at least one non-empty string")
     if len(queries) > 8:
         raise ValueError("queries accepts at most 8 items")
+    technical_focus = args.get("technical_focus")
+    if not isinstance(technical_focus, str) or len(technical_focus.strip()) < 2:
+        raise ValueError("technical_focus must be a non-empty technical description")
     limit = args.get("limit", 5)
     if isinstance(limit, bool):
         raise ValueError("limit must be an integer")
@@ -144,33 +143,30 @@ def validate_search_args(args: Mapping[str, Any]) -> dict[str, Any]:
     year_to = _year(args.get("year_to"), "year_to")
     if year_from and year_to and year_from > year_to:
         raise ValueError("year_from cannot be greater than year_to")
-    open_access_only = args.get("open_access_only", True)
-    if not isinstance(open_access_only, bool):
-        raise ValueError("open_access_only must be boolean")
     exclude_electric_vehicles = args.get("exclude_electric_vehicles", True)
     if not isinstance(exclude_electric_vehicles, bool):
         raise ValueError("exclude_electric_vehicles must be boolean")
     refresh_cache = args.get("refresh_cache", False)
     if not isinstance(refresh_cache, bool):
         raise ValueError("refresh_cache must be boolean")
-    prefer_theses = args.get("prefer_theses", True)
-    if not isinstance(prefer_theses, bool):
-        raise ValueError("prefer_theses must be boolean")
-    baja_context = args.get("baja_context", True)
-    if not isinstance(baja_context, bool):
-        raise ValueError("baja_context must be boolean")
+    document_preference = str(
+        args.get("document_preference", "long_form_first")
+    ).strip()
+    if document_preference not in {"long_form_first", "articles_first"}:
+        raise ValueError(
+            "document_preference must be 'long_form_first' or 'articles_first'"
+        )
     original_query = args.get("original_query")
     if original_query is not None and not isinstance(original_query, str):
         raise ValueError("original_query must be a string when supplied")
     return {
         "queries": queries,
+        "technical_focus": technical_focus.strip(),
         "limit": limit,
         "year_from": year_from,
         "year_to": year_to,
-        "open_access_only": open_access_only,
         "exclude_electric_vehicles": exclude_electric_vehicles,
-        "prefer_theses": prefer_theses,
-        "baja_context": baja_context,
+        "document_preference": document_preference,
         "original_query": original_query.strip() if original_query else None,
         "refresh_cache": refresh_cache,
     }

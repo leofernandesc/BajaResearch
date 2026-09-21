@@ -52,5 +52,6 @@ def test_fuzzy_matching_is_conservative_and_does_not_merge_short_titles():
 
 def test_repeated_normalized_object_without_year_is_not_duplicated():
     paper = Paper("", "Projeto de suspensão Baja SAE", sources=["oasisbr"])
-    merged = deduplicate_papers([paper, paper, paper])
+    copies = [Paper.from_dict(paper.to_storage_dict()) for _ in range(3)]
+    merged = deduplicate_papers(copies)
     assert len(merged) == 1

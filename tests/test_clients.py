@@ -453,7 +453,7 @@ class _FakeClient:
 
 
 def test_partial_source_failure_keeps_results_and_reports_429(tmp_path):
-    openalex_paper = Paper("", "Baja SAE telemetry data acquisition", year=2024, sources=["openalex"], source_scores={"openalex": .8})
+    openalex_paper = Paper("", "Baja SAE telemetry data acquisition", year=2024, open_access_url="https://repository.example/telemetry.pdf", sources=["openalex"], source_scores={"openalex": .8})
     crossref_paper = Paper("", "Baja SAE telemetry data acquisition", year=2024, doi="10.1000/telemetry", sources=["crossref"], source_scores={"crossref": .35})
     s2_error = SourceError("semantic_scholar", "source rate limit reached", status=429, code="rate_limited", retryable=True)
     clients = {
@@ -461,13 +461,31 @@ def test_partial_source_failure_keeps_results_and_reports_429(tmp_path):
         "semantic_scholar": _FakeClient(error=s2_error),
         "crossref": _FakeClient([crossref_paper]),
     }
+    class AcceptAllPdfVerifier:
+        def check_many(self, urls):
+            return {
+                url: AccessCheck(
+                    "verified_pdf",
+                    url,
+                    final_url=url,
+                    http_status=206,
+                    content_type="application/pdf",
+                    evidence={"pdf_magic": True},
+                )
+                for url in urls
+            }
+
+        def close(self):
+            pass
+
     service = ResearchService(
         config=ResearchConfig(cache_ttl_hours=24),
         storage=ResearchStorage(tmp_path / "cache.sqlite3"),
         clients=clients,
+        link_validator=AcceptAllPdfVerifier(),
     )
     result = service.search(
-        queries=["Baja SAE telemetry"], limit=5, open_access_only=False
+        queries=["Baja SAE telemetry"], technical_focus="telemetry data acquisition", limit=5
     )
     assert result["ok"] is True
     assert result["returned"] == 1

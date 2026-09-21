@@ -51,7 +51,8 @@ def test_invalid_public_link_is_not_exposed():
         link_status={"url": "invalid"},
     )
     assert paper.to_dict(compact=True)["url"] is None
-    assert paper.to_dict(compact=True)["link_verification"]["url"] == "invalid"
+    assert "link_verification" not in paper.to_dict(compact=True)
+    assert paper.to_dict(compact=False)["link_verification"]["url"] == "invalid"
 
 
 def test_document_type_normalization_does_not_infer_tcc_from_title() -> None:

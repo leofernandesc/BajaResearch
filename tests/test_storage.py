@@ -25,12 +25,16 @@ def test_cache_round_trip_and_paper_lookup(tmp_path):
         papers=[paper],
         source_status={"openalex": {"status": "ok"}},
         total_found=7,
+        diagnostics={"filter_counts": {"wrong_technical_focus": 2}},
+        algorithm_version="test-v2",
     )
-    cached = storage.get_cached_search("same-search")
+    cached = storage.get_cached_search("same-search", algorithm_version="test-v2")
     assert cached is not None
     assert cached["papers"][0].doi == "10.1000/chassis"
     assert cached["papers"][0].score_details["query_relevance"] == 0.9
     assert cached["total_found"] == 7
+    assert cached["diagnostics"]["filter_counts"]["wrong_technical_focus"] == 2
+    assert storage.get_cached_search("same-search", algorithm_version="old") is None
     assert storage.find_paper("https://doi.org/10.1000/CHASSIS").title == "Baja chassis design"
     assert storage.stats()["papers_cached"] == 1
 

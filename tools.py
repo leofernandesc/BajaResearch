@@ -35,6 +35,7 @@ try:
         application_context_signal,
         filter_relevant_papers,
         is_electric_vehicle_paper,
+        RANKING_VERSION,
         rank_papers,
         technical_relevance_signal,
     )
@@ -65,7 +66,7 @@ except ImportError:  # pragma: no cover - direct module imports
     from models import Paper, deduplicate_papers, is_long_form_document, merge_papers, normalize_doi
     from querying import expand_plugin_queries
     from routing import SearchRouter
-    from ranking import application_context_signal, filter_relevant_papers, is_electric_vehicle_paper, rank_papers, technical_relevance_signal
+    from ranking import RANKING_VERSION, application_context_signal, filter_relevant_papers, is_electric_vehicle_paper, rank_papers, technical_relevance_signal
     from schemas import (
         CITATION_SCHEMA,
         GET_PAPER_SCHEMA,
@@ -81,11 +82,16 @@ except ImportError:  # pragma: no cover - direct module imports
 
 
 logger = logging.getLogger(__name__)
+SEARCH_ALGORITHM_VERSION = f"ranking-{RANKING_VERSION}-verified-pdf-2"
 
 
 def _cache_key(queries: list[str], filters: Mapping[str, Any]) -> str:
     return json.dumps(
-        {"queries": queries, "filters": dict(filters)},
+        {
+            "algorithm_version": SEARCH_ALGORITHM_VERSION,
+            "queries": queries,
+            "filters": dict(filters),
+        },
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -480,6 +486,18 @@ class ResearchService:
             "results": [paper.to_dict(compact=True) for paper in papers],
             "sources": dict(statuses),
             "warnings": warnings,
+            "policy": {
+                "free_full_text_only": True,
+                "access_requirement": "anonymous_verified_pdf",
+                "baja_context_required": True,
+                "electric_vehicles_excluded": bool(
+                    filters.get("exclude_electric_vehicles", True)
+                ),
+                "document_preference": filters.get(
+                    "document_preference", "long_form_first"
+                ),
+            },
+            "more_available": max(0, total_found - len(papers)),
         }
         if filter_counts:
             response["filters_applied"] = {
@@ -499,42 +517,63 @@ class ResearchService:
         limit: int = 5,
         year_from: int | None = None,
         year_to: int | None = None,
-        open_access_only: bool = True,
-        prefer_theses: bool = True,
-        baja_context: bool = True,
+        document_preference: str = "long_form_first",
         exclude_electric_vehicles: bool = True,
         technical_focus: str | None = None,
         original_query: str | None = None,
         refresh_cache: bool = False,
+        # Compatibility-only arguments for direct Python callers. Tool callers
+        # cannot weaken the mandatory free-PDF or Baja-context policy.
+        open_access_only: bool | None = None,
+        prefer_theses: bool | None = None,
+        baja_context: bool | None = None,
     ) -> dict[str, Any]:
         search_deadline = time.monotonic() + self.config.global_timeout_seconds
+        if document_preference not in {"long_form_first", "articles_first"}:
+            raise ValueError(
+                "document_preference must be 'long_form_first' or 'articles_first'"
+            )
+        prefer_long_form = (
+            bool(prefer_theses)
+            if prefer_theses is not None
+            else document_preference == "long_form_first"
+        )
+        # Invariants: these are intentionally not configurable in the tool.
+        open_access_only = True
+        baja_context = True
         effective_queries = expand_plugin_queries(
-            queries, baja_context=baja_context, prefer_theses=prefer_theses
+            queries, baja_context=True, prefer_theses=prefer_long_form
         )
         filters = {
             "limit": limit,
             "year_from": year_from,
             "year_to": year_to,
-            "open_access_only": open_access_only,
-            "prefer_theses": prefer_theses,
-            "baja_context": baja_context,
+            "free_full_text_only": True,
+            "document_preference": (
+                "long_form_first" if prefer_long_form else "articles_first"
+            ),
+            "baja_context_required": True,
             "exclude_electric_vehicles": exclude_electric_vehicles,
             "technical_focus": technical_focus or queries[0],
         }
         key = _cache_key(effective_queries, filters)
         if not refresh_cache and self.config.cache_ttl_hours > 0:
-            cached = self.storage.get_cached_search(key, ttl_hours=self.config.cache_ttl_hours)
+            cached = self.storage.get_cached_search(
+                key,
+                ttl_hours=self.config.cache_ttl_hours,
+                algorithm_version=SEARCH_ALGORITHM_VERSION,
+            )
             if cached is not None:
                 statuses = cached.get("source_status", {})
                 self.last_status = dict(statuses)
                 cached_papers = cached["papers"][:limit]
                 self._validate_papers(cached_papers)
-                if open_access_only:
-                    cached_papers = [
-                        paper
-                        for paper in cached_papers
-                        if paper.access_status == "verified_pdf" and paper.full_text_url
-                    ]
+                cached_papers = [
+                    paper
+                    for paper in cached_papers
+                    if paper.access_status == "verified_pdf" and paper.full_text_url
+                ]
+                diagnostics = dict(cached.get("diagnostics") or {})
                 self.storage.upsert_papers(cached_papers)
                 logger.info("event=academic_search cache=hit returned=%d", len(cached_papers))
                 return self._search_response(
@@ -545,6 +584,8 @@ class ResearchService:
                     statuses=statuses,
                     cache_hit=True,
                     cache_created_at=cached.get("created_at"),
+                    filter_counts=diagnostics.get("filter_counts"),
+                    filter_warnings=diagnostics.get("filter_warnings", ()),
                 )
 
         source_results = self.router.search(
@@ -552,12 +593,12 @@ class ResearchService:
             limit=limit,
             year_from=year_from,
             year_to=year_to,
-            prefer_long_form=prefer_theses,
+            prefer_long_form=prefer_long_form,
         )
         all_papers = [paper for result in source_results if result.error is None for paper in result.papers]
         filtered_papers, filter_counts = self._filter_search_candidates(
             all_papers,
-            open_access_only=open_access_only,
+            open_access_only=True,
             exclude_electric_vehicles=exclude_electric_vehicles,
         )
         unique = deduplicate_papers(filtered_papers)
@@ -601,7 +642,7 @@ class ResearchService:
             unique,
             focus,
             effective_queries,
-            require_context=baja_context,
+            require_context=True,
         )
         filter_counts.update(relevance_counts)
         statuses = self._aggregate_statuses(source_results)
@@ -611,8 +652,8 @@ class ResearchService:
             effective_queries,
             technical_focus=focus,
             limit=None,
-            prefer_theses=prefer_theses,
-            require_context=baja_context,
+            prefer_theses=prefer_long_form,
+            require_context=True,
         )
         stored = self.storage.upsert_papers(ranked)
         ranked = rank_papers(
@@ -620,14 +661,14 @@ class ResearchService:
             effective_queries,
             technical_focus=focus,
             limit=None,
-            prefer_theses=prefer_theses,
-            require_context=baja_context,
+            prefer_theses=prefer_long_form,
+            require_context=True,
         )
         final, rejected_links = self._select_final_papers(
             ranked,
             limit=limit,
-            open_access_only=open_access_only,
-            prefer_long_form=prefer_theses,
+            open_access_only=True,
+            prefer_long_form=prefer_long_form,
             deadline=search_deadline,
         )
         filter_counts["unverified_open_access"] = rejected_links
@@ -645,13 +686,17 @@ class ResearchService:
             filter_warnings.append(
                 f"{filter_counts['missing_baja_context']} resultado(s) foram excluídos por não ter contexto Baja/Formula/off-road suficiente."
             )
-        if open_access_only and filter_counts["unverified_open_access"]:
+        if filter_counts["unverified_open_access"]:
             filter_warnings.append(
                 f"{filter_counts['unverified_open_access']} resultado(s) open access foram descartados porque o link de acesso não pôde ser verificado."
             )
-        if open_access_only and not final:
+        if not final:
             filter_warnings.append(
                 "Nenhum resultado com acesso aberto e link verificável permaneceu após os filtros."
+            )
+        elif len(final) < limit:
+            filter_warnings.append(
+                f"Apenas {len(final)} trabalho(s) atenderam simultaneamente aos critérios de tema, contexto Baja e PDF gratuito verificado."
             )
         self.storage.save_search(
             cache_key=key,
@@ -661,6 +706,11 @@ class ResearchService:
             papers=final,
             source_status=statuses,
             total_found=len(unique),
+            diagnostics={
+                "filter_counts": filter_counts,
+                "filter_warnings": filter_warnings,
+            },
+            algorithm_version=SEARCH_ALGORITHM_VERSION,
         )
         logger.info(
             "event=academic_search cache=miss queries=%d unique_results=%d returned=%d",
@@ -888,6 +938,7 @@ class ResearchService:
             "crossref": "https://api.crossref.org",
         }
         result["last_observed_api_status"] = self.last_status or result.get("last_source_status", {})
+        result["search_algorithm_version"] = SEARCH_ALGORITHM_VERSION
         return {"ok": True, **result}
 
 
