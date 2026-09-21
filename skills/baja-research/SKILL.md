@@ -42,7 +42,11 @@ records. It is not a general web search tool.
 6. Call `search_academic_papers` with the complete query list. Its `limit` is
    the final number of records, not the per-source request size. Keep
    `baja_context=true` unless the user explicitly requests a domain-only
-   search, and keep `prefer_theses=true` for detailed work.
+   search, and keep `prefer_theses=true` for detailed work. Keep
+   `open_access_only=true` (the default): do not recommend a paper whose full
+   text is likely behind a paywall. Keep `exclude_electric_vehicles=true`
+   (also the default); only disable it when the user explicitly asks for EV,
+   hybrid, battery-electric or fuel-cell vehicle literature.
 7. Use `get_paper` for detail, `find_related_papers` for follow-up discovery,
    and `format_citation` when the user requests ABNT or BibTeX.
 8. Present no more than five papers by default. For each, include the exact
@@ -67,6 +71,11 @@ records. It is not a general web search tool.
 - A DOI is a bibliographic identifier returned by a source; only expose a
   publisher/repository URL when the tool marks it as verified. Never copy a
   stale or unverified URL from a raw source payload.
+- By default, recommend only records with a source-provided open-access URL
+  that passes link validation. A DOI or publisher landing page alone is not
+  evidence that the full text is free. If the user explicitly requests a
+  paywalled paper or EV literature, pass the corresponding opt-out flag and
+  state that the default filter was relaxed.
 - If one source is rate-limited or unavailable, use the remaining results and
   briefly disclose the partial availability. Do not imply that all three
   sources answered.

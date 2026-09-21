@@ -32,7 +32,16 @@ SEARCH_SCHEMA = {
             },
             "year_from": {"type": ["integer", "null"], "minimum": 1000, "maximum": 2200},
             "year_to": {"type": ["integer", "null"], "minimum": 1000, "maximum": 2200},
-            "open_access_only": {"type": "boolean", "default": False},
+            "open_access_only": {
+                "type": "boolean",
+                "default": True,
+                "description": "Return only papers with a source-provided open-access record and a verified access URL.",
+            },
+            "exclude_electric_vehicles": {
+                "type": "boolean",
+                "default": True,
+                "description": "Exclude papers primarily about electric, hybrid or fuel-cell vehicles unless explicitly disabled.",
+            },
             "prefer_theses": {
                 "type": "boolean",
                 "default": True,
@@ -135,9 +144,12 @@ def validate_search_args(args: Mapping[str, Any]) -> dict[str, Any]:
     year_to = _year(args.get("year_to"), "year_to")
     if year_from and year_to and year_from > year_to:
         raise ValueError("year_from cannot be greater than year_to")
-    open_access_only = args.get("open_access_only", False)
+    open_access_only = args.get("open_access_only", True)
     if not isinstance(open_access_only, bool):
         raise ValueError("open_access_only must be boolean")
+    exclude_electric_vehicles = args.get("exclude_electric_vehicles", True)
+    if not isinstance(exclude_electric_vehicles, bool):
+        raise ValueError("exclude_electric_vehicles must be boolean")
     refresh_cache = args.get("refresh_cache", False)
     if not isinstance(refresh_cache, bool):
         raise ValueError("refresh_cache must be boolean")
@@ -156,6 +168,7 @@ def validate_search_args(args: Mapping[str, Any]) -> dict[str, Any]:
         "year_from": year_from,
         "year_to": year_to,
         "open_access_only": open_access_only,
+        "exclude_electric_vehicles": exclude_electric_vehicles,
         "prefer_theses": prefer_theses,
         "baja_context": baja_context,
         "original_query": original_query.strip() if original_query else None,

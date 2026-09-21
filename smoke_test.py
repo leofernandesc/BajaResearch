@@ -24,7 +24,17 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=5)
     parser.add_argument("--year-from", type=int)
     parser.add_argument("--year-to", type=int)
-    parser.add_argument("--open-access-only", action="store_true")
+    access_group = parser.add_mutually_exclusive_group()
+    access_group.add_argument(
+        "--open-access-only",
+        action="store_true",
+        help="Explicitly keep the default: only verified open-access papers.",
+    )
+    access_group.add_argument(
+        "--include-paywalled",
+        action="store_true",
+        help="Include non-open-access records for diagnostic comparison.",
+    )
     parser.add_argument(
         "--db",
         default=str(Path(".baja-research-smoke.sqlite3").resolve()),
@@ -42,7 +52,7 @@ def main() -> int:
             limit=args.limit,
             year_from=args.year_from,
             year_to=args.year_to,
-            open_access_only=args.open_access_only,
+            open_access_only=not args.include_paywalled,
             refresh_cache=True,
         )
     finally:

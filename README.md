@@ -40,6 +40,19 @@ DOI, depois IDs acadêmicos, depois título+ano e somente então fuzzy matching
 conservador definem a deduplicação. O citation count é log-normalizado e tem
 peso pequeno no ranking.
 
+Por padrão, a busca recomenda somente trabalhos com sinal de acesso aberto
+fornecido pela fonte (`open_access_url`) e URL de acesso verificável. Um DOI ou
+uma página de editora que abre não prova que o texto completo seja gratuito.
+Links com erro 4xx, bloqueios temporários, 429, 5xx ou falhas de rede não são
+enviados como links utilizáveis. O DOI continua sendo mostrado quando
+fornecido pela fonte, mas o trabalho só entra na recomendação com acesso
+aberto verificável.
+
+Trabalhos centrados em veículos elétricos, híbridos, baterias de EV e células
+a combustível são excluídos por padrão, pois não são úteis para o escopo
+normal da equipe Baja. Para uma busca explicitamente sobre EV, use
+`exclude_electric_vehicles=false` e deixe claro que o filtro foi relaxado.
+
 ## Pré-requisitos
 
 - Hermes Agent instalado e executável como `hermes`.
@@ -162,7 +175,14 @@ normalizados e não depende das APIs para a suíte unitária:
 ```
 
 Ele usa um SQLite temporário do smoke test (`.baja-research-smoke.sqlite3`,
-ignorado pelo Git). Para testar apenas open access ou um período:
+ignorado pelo Git). A busca já exige acesso aberto e link verificável. Para
+comparar com registros pagos em um diagnóstico específico, use explicitamente:
+
+```bash
+.venv/bin/python smoke_test.py --query "Baja SAE telemetry" --include-paywalled
+```
+
+Para restringir por período:
 
 ```bash
 .venv/bin/python smoke_test.py --query "Baja SAE telemetry" --open-access-only --year-from 2018 --year-to 2026
@@ -238,6 +258,9 @@ Research não lê nem registra credenciais ou conteúdo da pasta de sessão.
   são omitidos; 429, 5xx e falhas de rede ficam como `unknown` e também não
   são apresentados como links utilizáveis. O DOI retornado pela fonte pode
   continuar disponível como identificador bibliográfico.
+- O filtro padrão de acesso aberto reduz cobertura: uma página que abre não
+  garante texto completo gratuito. O filtro pode ser relaxado apenas de forma
+  explícita.
 - As APIs podem limitar ou alterar resultados; falhas parciais são reportadas.
 - Não há download/processamento de PDF, RAG, biblioteca interna, usuários,
   frontend, servidor web ou sincronização entre computadores.

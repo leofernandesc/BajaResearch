@@ -19,7 +19,7 @@ try:
     from .clients.openalex import OpenAlexClient
     from .clients.semantic_scholar import SemanticScholarClient
     from .models import Paper, deduplicate_papers, merge_papers, normalize_doi
-    from .ranking import rank_papers
+    from .ranking import is_electric_vehicle_paper, rank_papers
     from .schemas import (
         CITATION_SCHEMA,
         GET_PAPER_SCHEMA,
@@ -39,7 +39,7 @@ except ImportError:  # pragma: no cover - direct module imports
     from clients.openalex import OpenAlexClient
     from clients.semantic_scholar import SemanticScholarClient
     from models import Paper, deduplicate_papers, merge_papers, normalize_doi
-    from ranking import rank_papers
+    from ranking import is_electric_vehicle_paper, rank_papers
     from schemas import (
         CITATION_SCHEMA,
         GET_PAPER_SCHEMA,
@@ -290,6 +290,64 @@ class ResearchService:
         contextual_ids = {paper.internal_id for paper in contextual}
         return contextual + [paper for paper in papers if paper.internal_id not in contextual_ids]
 
+    @staticmethod
+    def _filter_search_candidates(
+        papers: list[Paper],
+        *,
+        open_access_only: bool,
+        exclude_electric_vehicles: bool,
+    ) -> tuple[list[Paper], dict[str, int]]:
+        """Apply the BAJA default exclusions before ranking.
+
+        ``open_access_url`` is only populated by clients when the source
+        provides an open-access signal. Reachability is checked later, after
+        ranking, so a dead repository link cannot occupy a final slot.
+        """
+        kept: list[Paper] = []
+        counts = {
+            "electric_vehicle": 0,
+            "not_open_access": 0,
+            "unverified_open_access": 0,
+        }
+        for paper in papers:
+            if exclude_electric_vehicles and is_electric_vehicle_paper(paper):
+                counts["electric_vehicle"] += 1
+                continue
+            if open_access_only and not paper.open_access_url:
+                counts["not_open_access"] += 1
+                continue
+            kept.append(paper)
+        return kept, counts
+
+    def _select_final_papers(
+        self,
+        ranked: list[Paper],
+        *,
+        limit: int,
+        open_access_only: bool,
+    ) -> tuple[list[Paper], int]:
+        """Select final results, validating OA URLs before recommendation."""
+        if not open_access_only:
+            final = ranked[:limit]
+            self._validate_papers(final)
+            return final, 0
+        if not self.config.validate_links:
+            # Explicit diagnostic mode: source-provided OA evidence is still
+            # required, but link verification has been intentionally disabled.
+            return ranked[:limit], 0
+
+        # Validate a bounded ranked window so dead repository records can be
+        # skipped without issuing a request for every raw source result.
+        candidate_window = ranked[: min(len(ranked), max(40, limit * 8))]
+        self._validate_papers(candidate_window)
+        usable = [
+            paper
+            for paper in candidate_window
+            if paper.link_status.get("open_access_url") == "valid"
+        ]
+        rejected = len(candidate_window) - len(usable)
+        return usable[:limit], rejected
+
     def _source_info(self, source: str, client: Any) -> dict[str, Any]:
         return {
             "configured": bool(getattr(client, "configured", False)),
@@ -387,7 +445,10 @@ class ResearchService:
         statuses: Mapping[str, Any],
         cache_hit: bool,
         cache_created_at: str | None = None,
+        filter_counts: Mapping[str, int] | None = None,
+        filter_warnings: Iterable[str] = (),
     ) -> dict[str, Any]:
+        warnings = [*self._warnings(statuses), *filter_warnings]
         response: dict[str, Any] = {
             "ok": bool(papers) or any(value.get("status") == "ok" for value in statuses.values()),
             "queries": queries,
@@ -401,8 +462,12 @@ class ResearchService:
             "returned": len(papers),
             "results": [paper.to_dict(compact=True) for paper in papers],
             "sources": dict(statuses),
-            "warnings": self._warnings(statuses),
+            "warnings": warnings,
         }
+        if filter_counts:
+            response["filters_applied"] = {
+                key: value for key, value in filter_counts.items() if value
+            }
         if not papers and not response["ok"]:
             response["error"] = {
                 "code": "all_sources_unavailable",
@@ -417,9 +482,10 @@ class ResearchService:
         limit: int = 5,
         year_from: int | None = None,
         year_to: int | None = None,
-        open_access_only: bool = False,
+        open_access_only: bool = True,
         prefer_theses: bool = True,
         baja_context: bool = True,
+        exclude_electric_vehicles: bool = True,
         original_query: str | None = None,
         refresh_cache: bool = False,
     ) -> dict[str, Any]:
@@ -433,6 +499,7 @@ class ResearchService:
             "open_access_only": open_access_only,
             "prefer_theses": prefer_theses,
             "baja_context": baja_context,
+            "exclude_electric_vehicles": exclude_electric_vehicles,
         }
         key = _cache_key(effective_queries, filters)
         if not refresh_cache and self.config.cache_ttl_hours > 0:
@@ -442,6 +509,12 @@ class ResearchService:
                 self.last_status = dict(statuses)
                 cached_papers = cached["papers"][:limit]
                 self._validate_papers(cached_papers)
+                if open_access_only:
+                    cached_papers = [
+                        paper
+                        for paper in cached_papers
+                        if paper.link_status.get("open_access_url") == "valid"
+                    ]
                 self.storage.upsert_papers(cached_papers)
                 logger.info("event=academic_search cache=hit returned=%d", len(cached_papers))
                 return self._search_response(
@@ -475,7 +548,12 @@ class ResearchService:
         statuses = self._aggregate_statuses(source_results)
         self.last_status = statuses
         all_papers = [paper for result in source_results if result.error is None for paper in result.papers]
-        unique = deduplicate_papers(all_papers)
+        filtered_papers, filter_counts = self._filter_search_candidates(
+            all_papers,
+            open_access_only=open_access_only,
+            exclude_electric_vehicles=exclude_electric_vehicles,
+        )
+        unique = deduplicate_papers(filtered_papers)
         ranked = rank_papers(
             unique,
             effective_queries,
@@ -492,9 +570,24 @@ class ResearchService:
             require_context=baja_context,
         )
         ranked = self._prioritize_explicit_context(ranked)
-        final = ranked[:limit]
-        self._validate_papers(final)
+        final, rejected_links = self._select_final_papers(
+            ranked, limit=limit, open_access_only=open_access_only
+        )
+        filter_counts["unverified_open_access"] = rejected_links
         final = self.storage.upsert_papers(final)
+        filter_warnings: list[str] = []
+        if filter_counts["electric_vehicle"]:
+            filter_warnings.append(
+                f"{filter_counts['electric_vehicle']} resultado(s) sobre veículos elétricos/híbridos foram excluídos."
+            )
+        if open_access_only and filter_counts["unverified_open_access"]:
+            filter_warnings.append(
+                f"{filter_counts['unverified_open_access']} resultado(s) open access foram descartados porque o link de acesso não pôde ser verificado."
+            )
+        if open_access_only and not final:
+            filter_warnings.append(
+                "Nenhum resultado com acesso aberto e link verificável permaneceu após os filtros."
+            )
         self.storage.save_search(
             cache_key=key,
             original_query=original_query,
@@ -517,6 +610,8 @@ class ResearchService:
             total_found=len(unique),
             statuses=statuses,
             cache_hit=False,
+            filter_counts=filter_counts,
+            filter_warnings=filter_warnings,
         )
 
     def _get_model(self, identifier: str) -> tuple[Paper | None, dict[str, Any], list[str]]:
@@ -602,6 +697,11 @@ class ResearchService:
             if statuses[source]["status"] == "not_tested" and status.get("status") != "not_tested":
                 statuses[source] = status
         related = [paper for result in native_results if result.error is None for paper in result.papers]
+        related, related_filter_counts = self._filter_search_candidates(
+            related,
+            open_access_only=True,
+            exclude_electric_vehicles=True,
+        )
 
         if len(related) < limit:
             query = paper.title
@@ -610,6 +710,13 @@ class ResearchService:
             fallback = self.search(queries=[query], limit=min(20, max(limit * 2, 5)), refresh_cache=False)
             statuses = fallback.get("sources", statuses)
             related.extend(Paper.from_dict(item) for item in fallback.get("results", []))
+            related, fallback_filter_counts = self._filter_search_candidates(
+                related,
+                open_access_only=True,
+                exclude_electric_vehicles=True,
+            )
+            for key, value in fallback_filter_counts.items():
+                related_filter_counts[key] = related_filter_counts.get(key, 0) + value
         related = deduplicate_papers(related)
         related = [candidate for candidate in related if not self._same_paper(candidate, paper)]
         related = rank_papers(
@@ -620,10 +727,11 @@ class ResearchService:
             require_context=True,
         )
         related = self._prioritize_explicit_context(related)
-        related = related[:limit]
+        related, rejected_links = self._select_final_papers(
+            related, limit=limit, open_access_only=True
+        )
+        related_filter_counts["unverified_open_access"] = rejected_links
         stored = self.storage.upsert_papers(related)
-        self._validate_papers(stored)
-        stored = self.storage.upsert_papers(stored)
         related = rank_papers(
             stored,
             [paper.title, *paper.topics],
@@ -634,6 +742,14 @@ class ResearchService:
         related = self._prioritize_explicit_context(related)
         related = related[:limit]
         warnings = self._warnings(statuses)
+        if related_filter_counts["electric_vehicle"]:
+            warnings.append(
+                f"{related_filter_counts['electric_vehicle']} resultado(s) sobre veículos elétricos/híbridos foram excluídos."
+            )
+        if related_filter_counts["unverified_open_access"]:
+            warnings.append(
+                f"{related_filter_counts['unverified_open_access']} resultado(s) foram descartados por falta de link open access verificável."
+            )
         return {
             "ok": bool(related) or any(status.get("status") == "ok" for status in statuses.values()),
             "identifier": identifier,
@@ -642,6 +758,11 @@ class ResearchService:
             "results": [candidate.to_dict(compact=True) for candidate in related],
             "sources": statuses,
             "warnings": warnings,
+            "filters_applied": {
+                key: value
+                for key, value in related_filter_counts.items()
+                if value
+            },
         }
 
     @staticmethod

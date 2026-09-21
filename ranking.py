@@ -31,6 +31,27 @@ _REPOSITORY_TERMS = {
     "repository", "institutional repository", "repositorio", "dspace",
     "etd", "eprints", "scholarworks", "handle.net", "university archive",
 }
+_ELECTRIC_VEHICLE_TERMS = {
+    "electric vehicle", "electric vehicles", "battery electric vehicle",
+    "plug in hybrid", "plug in hybrid vehicle", "hybrid electric vehicle",
+    "hybrid vehicle", "fuel cell vehicle", "electric mobility", "electric car",
+    "electrified vehicle", "ev", "veiculo eletrico", "veiculos eletricos",
+    "carro eletrico", "mobilidade eletrica", "veiculo hibrido",
+    "veiculos hibridos", "celula a combustivel", "mobil listrik",
+    "kendaraan listrik", "electric baja", "baja electric", "electric atv",
+    "electric off road", "electric offroad", "electric formula sae",
+    "electric formula student", "electric powertrain", "electric drivetrain",
+    "electric propulsion", "battery powered vehicle", "battery vehicle",
+    "hybrid baja", "hybrid atv", "vehiculo electrico", "vehiculos electricos",
+    "coche electrico", "movilidad electrica", "vehiculo hibrido",
+    "vehiculos hibridos", "electrofahrzeug", "elektrofahrzeuge", "elektroauto",
+    "hybridfahrzeug", "vehicule electrique", "vehicules electriques",
+    "voiture electrique", "vehicule hybride", "kenderaan elektrik",
+}
+_ELECTRIC_VEHICLE_SUPPORT_TERMS = {
+    "battery", "charging", "charger", "powertrain", "fuel cell", "traction",
+    "state of charge", "energy management",
+}
 
 
 def _tokens(value: str) -> set[str]:
@@ -53,6 +74,38 @@ def _contains_term(haystack: str, term: str) -> bool:
     needle = normalize_title(term)
     padded = f" {haystack} "
     return bool(needle) and f" {needle} " in padded
+
+
+def electric_vehicle_signal(paper: Paper) -> float:
+    """Detect papers primarily about EV/hybrid/fuel-cell vehicles.
+
+    A generic mention of electricity is not enough. Strong title/topic/venue
+    evidence, or repeated/supporting evidence in the abstract, is required so
+    ordinary vehicle-electronics papers are not discarded accidentally.
+    """
+    title_topics = normalize_title(
+        " ".join([paper.title, paper.venue or "", *paper.topics])
+    )
+    if any(_contains_term(title_topics, term) for term in _ELECTRIC_VEHICLE_TERMS):
+        return 1.0
+
+    abstract = normalize_title(paper.abstract or "")
+    matches = sum(
+        1 for term in _ELECTRIC_VEHICLE_TERMS if _contains_term(abstract, term)
+    )
+    support = sum(
+        1
+        for term in _ELECTRIC_VEHICLE_SUPPORT_TERMS
+        if _contains_term(abstract, term)
+    )
+    if matches >= 2 or (matches >= 1 and support >= 1):
+        return 0.85
+    return 0.0
+
+
+def is_electric_vehicle_paper(paper: Paper) -> bool:
+    """Return whether the record should be excluded by the BAJA default."""
+    return electric_vehicle_signal(paper) >= 0.75
 
 
 def _query_relevance(paper: Paper, queries: Iterable[str]) -> float:
@@ -216,4 +269,4 @@ def rank_papers(
     return ranked[:limit] if limit is not None else ranked
 
 
-__all__ = ["rank_papers"]
+__all__ = ["electric_vehicle_signal", "is_electric_vehicle_paper", "rank_papers"]

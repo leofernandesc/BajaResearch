@@ -167,7 +167,9 @@ def test_partial_source_failure_keeps_results_and_reports_429(tmp_path):
         storage=ResearchStorage(tmp_path / "cache.sqlite3"),
         clients=clients,
     )
-    result = service.search(queries=["Baja SAE telemetry"], limit=5)
+    result = service.search(
+        queries=["Baja SAE telemetry"], limit=5, open_access_only=False
+    )
     assert result["ok"] is True
     assert result["returned"] == 1
     assert result["sources"]["semantic_scholar"]["status"] == "error"

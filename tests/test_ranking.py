@@ -1,5 +1,5 @@
 from models import Paper
-from ranking import rank_papers
+from ranking import is_electric_vehicle_paper, rank_papers
 
 
 def test_direct_query_match_beats_high_citation_off_topic_paper():
@@ -94,3 +94,20 @@ def test_spanish_baja_word_does_not_fake_baja_sae_context():
     )
     assert ranked[0].score_details["context_signal"] == 0.0
     assert ranked[0].score_details["context_gate"] == 0.55
+
+
+def test_portuguese_electric_vehicle_title_is_detected():
+    paper = Paper(
+        "",
+        "Análise estrutural de veículo elétrico Baja SAE",
+        abstract="Projeto de bateria e powertrain para mobilidade elétrica.",
+        year=2023,
+    )
+    ranked = rank_papers([paper], ["electronics Baja SAE"], prefer_theses=True)
+    assert ranked[0].score_details["query_relevance"] >= 0.0
+    assert is_electric_vehicle_paper(paper) is True
+
+
+def test_indonesian_electric_vehicle_title_is_detected():
+    paper = Paper("", "Analisa struktur sasis kendaraan mobil listrik Baja SAE")
+    assert is_electric_vehicle_paper(paper) is True
