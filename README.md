@@ -329,10 +329,10 @@ de ranking e disponibilidade observada das fontes.
   v0.20.6 verificado, o CLI pode validar o toolset dinâmico antes de concluir
   a descoberta assíncrona dos plugins. É um aviso de inicialização, não uma
   falha do BAJA Research: confirme com `hermes plugins doctor ... --ci`,
-  `hermes tools list --platform cli` e `hermes tools list --platform
-  whatsapp`. Não altere o core do Hermes nem habilite todos os toolsets apenas
-  para ocultar esse aviso; as ferramentas são registradas e executadas
-  normalmente depois da descoberta.
+  `hermes tools list --platform cli` e
+  `hermes tools list --platform whatsapp`. Não altere o core do Hermes nem
+  habilite todos os toolsets apenas para ocultar esse aviso; as ferramentas
+  são registradas e executadas normalmente depois da descoberta.
 - **HTTP 429:** a fonte entra em circuit breaker temporário; resultados das
   outras fontes continuam válidos e o erro deve ser informado na resposta.
 - **Vieram menos trabalhos que o pedido:** os demais falharam em tema, contexto

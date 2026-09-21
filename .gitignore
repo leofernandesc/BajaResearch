@@ -12,5 +12,6 @@ __pycache__/
 htmlcov/
 *.sqlite3
 *.sqlite3-*
+.baja-research-smoke.sqlite3*
 dist/
 build/
