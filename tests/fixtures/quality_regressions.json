@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "baja_suspension_thesis",
+      "expected": "accept_long_form",
+      "title": "Dimensionamento de uma suspensão para um protótipo Baja SAE",
+      "document_type": "bachelorThesis",
+      "technical_focus": "suspension optimization",
+      "application_context": "Baja SAE",
+      "full_text_url": "https://repository.example.edu/document.pdf"
+    },
+    {
+      "id": "tcc_acronym_false_positive",
+      "expected": "reject_off_topic",
+      "title": "A escrita do TCC e a formação universitária",
+      "document_type": "article",
+      "technical_focus": "suspension optimization",
+      "application_context": "Baja SAE",
+      "full_text_url": "https://journal.example.org/article.pdf"
+    },
+    {
+      "id": "formula_sae_electric_reverse_phrase",
+      "expected": "reject_electric_vehicle",
+      "title": "Otimização da suspensão de um veículo Formula SAE elétrico",
+      "document_type": "bachelorThesis",
+      "technical_focus": "suspension optimization",
+      "application_context": "Formula SAE",
+      "full_text_url": "https://repository.example.edu/electric.pdf"
+    },
+    {
+      "id": "suspension_query_aerodynamics_result",
+      "expected": "reject_wrong_technical_focus",
+      "title": "Aerodynamic optimization of a Formula Student rear wing",
+      "document_type": "article",
+      "technical_focus": "suspension optimization",
+      "application_context": "Formula Student",
+      "full_text_url": "https://journal.example.org/aero.pdf"
+    },
+    {
+      "id": "publisher_landing_page",
+      "expected": "reject_not_pdf",
+      "title": "Suspension design for an all-terrain vehicle",
+      "document_type": "article",
+      "technical_focus": "suspension optimization",
+      "application_context": "off-road vehicle",
+      "full_text_url": "https://publisher.example.com/article/123",
+      "response_content_type": "text/html"
+    },
+    {
+      "id": "anonymous_pdf",
+      "expected": "accept_free_pdf",
+      "title": "Projeto de geometria de suspensão e direção aplicado para Baja SAE",
+      "document_type": "bachelorThesis",
+      "technical_focus": "suspension optimization",
+      "application_context": "Baja SAE",
+      "full_text_url": "https://repository.example.edu/bitstream/456.pdf",
+      "response_content_type": "application/pdf",
+      "response_prefix": "%PDF-"
+    }
+  ]
+}
