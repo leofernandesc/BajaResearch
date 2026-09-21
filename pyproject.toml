@@ -26,6 +26,7 @@ py-modules = [
   "config",
   "models",
   "querying",
+  "routing",
   "ranking",
   "schemas",
   "storage",

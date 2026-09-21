@@ -56,6 +56,8 @@ class SourceResult:
     latency_ms: float = 0.0
     error: dict[str, Any] | None = None
     query: str | None = None
+    cache_hit: bool = False
+    skipped: bool = False
 
     @property
     def ok(self) -> bool:

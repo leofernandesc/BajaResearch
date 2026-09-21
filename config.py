@@ -10,7 +10,10 @@ from typing import Any
 @dataclass(frozen=True)
 class ResearchConfig:
     cache_ttl_hours: float = 24.0
+    source_cache_ttl_hours: float = 24.0
     request_timeout_seconds: float = 15.0
+    global_timeout_seconds: float = 25.0
+    circuit_breaker_seconds: float = 60.0
     max_retries: int = 2
     openalex_api_key: str | None = None
     semantic_scholar_api_key: str | None = None
@@ -58,8 +61,17 @@ def config_from_context(ctx: Any) -> ResearchConfig:
         context_timeout = 15.0
     return ResearchConfig(
         cache_ttl_hours=_env_float("BAJA_RESEARCH_CACHE_TTL_HOURS", context_ttl),
+        source_cache_ttl_hours=_env_float(
+            "BAJA_RESEARCH_SOURCE_CACHE_TTL_HOURS", 24.0
+        ),
         request_timeout_seconds=_env_float(
             "BAJA_RESEARCH_REQUEST_TIMEOUT_SECONDS", context_timeout
+        ),
+        global_timeout_seconds=_env_float(
+            "BAJA_RESEARCH_GLOBAL_TIMEOUT_SECONDS", 25.0
+        ),
+        circuit_breaker_seconds=_env_float(
+            "BAJA_RESEARCH_CIRCUIT_BREAKER_SECONDS", 60.0
         ),
         max_retries=_env_int("BAJA_RESEARCH_MAX_RETRIES", 2),
         openalex_api_key=os.getenv("OPENALEX_API_KEY") or None,

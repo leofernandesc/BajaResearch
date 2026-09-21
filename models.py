@@ -364,7 +364,17 @@ class Paper:
 
     def to_storage_dict(self) -> dict[str, Any]:
         """Serialize all selected metadata needed to reconstruct the record."""
-        return self.to_dict(compact=False)
+        result = self.to_dict(compact=False)
+        result.update(
+            {
+                "url": self.url,
+                "open_access_url": self.open_access_url,
+                "landing_url": self.landing_url,
+                "full_text_url": self.full_text_url,
+                "access_status": self.access_status,
+            }
+        )
+        return result
 
 
 def _is_number(value: Any) -> bool:

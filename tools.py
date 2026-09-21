@@ -23,6 +23,7 @@ try:
     from .config import ResearchConfig, config_from_context
     from .models import Paper, deduplicate_papers, merge_papers, normalize_doi
     from .querying import expand_plugin_queries
+    from .routing import SearchRouter
     from .ranking import is_electric_vehicle_paper, rank_papers
     from .schemas import (
         CITATION_SCHEMA,
@@ -50,6 +51,7 @@ except ImportError:  # pragma: no cover - direct module imports
     from config import ResearchConfig, config_from_context
     from models import Paper, deduplicate_papers, merge_papers, normalize_doi
     from querying import expand_plugin_queries
+    from routing import SearchRouter
     from ranking import is_electric_vehicle_paper, rank_papers
     from schemas import (
         CITATION_SCHEMA,
@@ -89,6 +91,7 @@ class ResearchService:
         link_validator: LinkValidator | None = None,
         repository_resolver: RepositoryResolver | None = None,
         unpaywall_client: UnpaywallClient | None = None,
+        router: SearchRouter | None = None,
     ) -> None:
         self.config = config or ResearchConfig()
         self.storage = storage or ResearchStorage(
@@ -137,6 +140,13 @@ class ResearchService:
             email=self.config.unpaywall_email,
             timeout=self.config.request_timeout_seconds,
             max_retries=min(1, self.config.max_retries),
+        )
+        self.router = router or SearchRouter(
+            clients=self.clients,
+            storage=self.storage,
+            cache_ttl_hours=self.config.source_cache_ttl_hours,
+            global_timeout_seconds=self.config.global_timeout_seconds,
+            circuit_breaker_seconds=self.config.circuit_breaker_seconds,
         )
         self.last_status: dict[str, Any] = {}
 
@@ -393,6 +403,8 @@ class ResearchService:
                 "status": status,
                 "queries_attempted": len(items),
                 "result_count": sum(len(item.papers) for item in successes),
+                "cache_hits": sum(1 for item in successes if item.cache_hit),
+                "skipped_calls": sum(1 for item in items if item.skipped),
                 "latency_ms": round(max((item.latency_ms for item in items), default=0.0), 2),
                 "errors": errors,
             }
@@ -507,26 +519,13 @@ class ResearchService:
                     cache_created_at=cached.get("created_at"),
                 )
 
-        source_limit = max(8, min(50, limit * 3))
-        operations: list[tuple[str, str | None, Callable[[], list[Paper]]]] = []
-        for query in effective_queries:
-            for source, client in self.clients.items():
-                operations.append(
-                    (
-                        source,
-                        query,
-                        lambda client=client, query=query: client.search(
-                            query,
-                            limit=source_limit,
-                            year_from=year_from,
-                            year_to=year_to,
-                            open_access_only=open_access_only,
-                        ),
-                    )
-                )
-        source_results = self._parallel(operations)
-        statuses = self._aggregate_statuses(source_results)
-        self.last_status = statuses
+        source_results = self.router.search(
+            queries=effective_queries,
+            limit=limit,
+            year_from=year_from,
+            year_to=year_to,
+            prefer_long_form=prefer_theses,
+        )
         all_papers = [paper for result in source_results if result.error is None for paper in result.papers]
         filtered_papers, filter_counts = self._filter_search_candidates(
             all_papers,
@@ -534,6 +533,22 @@ class ResearchService:
             exclude_electric_vehicles=exclude_electric_vehicles,
         )
         unique = deduplicate_papers(filtered_papers)
+        enrichment_results = self.router.enrich(unique, limit=min(3, limit))
+        if enrichment_results:
+            source_results.extend(enrichment_results)
+            unique = deduplicate_papers(
+                [
+                    *unique,
+                    *[
+                        paper
+                        for result in enrichment_results
+                        if result.error is None
+                        for paper in result.papers
+                    ],
+                ]
+            )
+        statuses = self._aggregate_statuses(source_results)
+        self.last_status = statuses
         ranked = rank_papers(
             unique,
             effective_queries,
