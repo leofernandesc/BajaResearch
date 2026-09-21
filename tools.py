@@ -551,7 +551,10 @@ class ResearchService:
         open_access_only = True
         baja_context = True
         effective_queries = expand_plugin_queries(
-            queries, baja_context=True, prefer_theses=prefer_long_form
+            queries,
+            baja_context=True,
+            prefer_theses=prefer_long_form,
+            technical_focus=technical_focus,
         )
         filters = {
             "limit": limit,

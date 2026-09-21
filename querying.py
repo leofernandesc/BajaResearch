@@ -33,13 +33,26 @@ _THESIS_QUERY_MARKERS = (
 
 
 def expand_plugin_queries(
-    queries: list[str], *, baja_context: bool, prefer_theses: bool
+    queries: list[str],
+    *,
+    baja_context: bool,
+    prefer_theses: bool,
+    technical_focus: str | None = None,
 ) -> list[str]:
     """Add narrow safety variants without replacing Hermes query expansion."""
     expanded = list(queries)
     joined = " ".join(expanded).casefold()
     base = expanded[0]
-    if baja_context and not any(marker in joined for marker in _BAJA_CONTEXT_MARKERS):
+    has_context = any(marker in joined for marker in _BAJA_CONTEXT_MARKERS)
+    core = (technical_focus or base).strip()
+    if baja_context and core:
+        contextual_core = f"Baja SAE {core}"
+        if contextual_core.casefold() not in {query.casefold() for query in expanded}:
+            # A concise contextual query is a safety net when the LLM supplied
+            # only over-constrained thesis/repository variants. It also gives
+            # repositories a realistic chance to return long-form records.
+            expanded.insert(0, contextual_core)
+    if baja_context and not has_context:
         expanded.extend(
             (f"Baja SAE {base}", f"{base} off-road vehicle Formula SAE")
         )

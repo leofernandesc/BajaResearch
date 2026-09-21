@@ -2,6 +2,7 @@ from clients.base import SourceError
 from models import Paper
 from routing import SearchRouter
 from storage import ResearchStorage
+from querying import expand_plugin_queries
 
 
 class CountingClient:
@@ -126,3 +127,16 @@ def test_query_priority_avoids_overconstrained_thesis_suffix():
         ]
     )
     assert prioritized[0] == "Baja SAE suspension optimization"
+
+
+def test_query_expansion_adds_focus_context_when_llm_queries_are_overconstrained():
+    expanded = expand_plugin_queries(
+        [
+            "Baja SAE suspension optimization geometry monograph",
+            "Mini Baja otimização suspensão TCC geometria",
+        ],
+        baja_context=True,
+        prefer_theses=True,
+        technical_focus="suspension geometry optimization",
+    )
+    assert expanded[0] == "Baja SAE suspension geometry optimization"
