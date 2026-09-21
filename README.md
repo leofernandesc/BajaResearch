@@ -89,7 +89,8 @@ As cinco ferramentas são:
 6. **Unpaywall**: resolvedor opcional de cópias abertas por DOI. Toda URL ainda
    passa pela verificação real de PDF.
 
-O resolvedor de repositórios conhece DSpace 6 e DSpace 7 e tenta converter a
+O resolvedor de repositórios conhece DSpace 6 e DSpace 7 e usa OAI-PMH/METS/ORE
+para instalações DSpace 8/9 que protegem a API REST. Ele tenta converter a
 landing page em um bitstream original. Uma falha em uma fonte não derruba a
 busca inteira; o erro, inclusive HTTP 429, aparece em `sources` e `warnings`.
 
@@ -347,7 +348,8 @@ de ranking e disponibilidade observada das fontes.
 - O plugin verifica o acesso e os primeiros bytes do PDF, mas não interpreta o
   conteúdo integral; ainda não há processamento de PDFs ou RAG.
 - A cobertura de TCCs depende dos índices Oasisbr/BDTD e dos padrões DSpace
-  suportados. Repositórios com login ou endpoints desconhecidos são omitidos.
+  suportados. Repositórios com login, OAI-PMH indisponível ou endpoints
+  desconhecidos são omitidos.
 - Query expansion continua principalmente sob responsabilidade do Hermes/LLM;
   o plugin adiciona somente salvaguardas de recuperação e aplica gates rígidos.
 - O ranking mede adequação à consulta, não qualidade metodológica definitiva.
