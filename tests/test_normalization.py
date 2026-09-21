@@ -35,3 +35,14 @@ def test_paper_serialization_is_compact_without_raw_payload():
     assert len(compact["abstract_snippet"]) == 700
     assert "metadata" not in compact
     assert paper.to_dict(compact=False)["metadata"] == {"selected": "value"}
+
+
+def test_invalid_public_link_is_not_exposed():
+    paper = Paper(
+        internal_id="paper:bad-link",
+        title="A paper with a stale repository URL",
+        url="https://example.invalid/stale.pdf",
+        link_status={"url": "invalid"},
+    )
+    assert paper.to_dict(compact=True)["url"] is None
+    assert paper.to_dict(compact=True)["link_verification"]["url"] == "invalid"

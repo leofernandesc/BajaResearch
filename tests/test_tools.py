@@ -51,3 +51,18 @@ def test_invalid_tool_arguments_are_structured():
     response = json.loads(handlers["search_academic_papers"]({"queries": []}))
     assert response["ok"] is False
     assert response["error"]["code"] == "invalid_arguments"
+
+
+def test_broad_query_gets_baja_and_thesis_retrieval_variants(tmp_path):
+    clients = {name: FakeClient() for name in ("openalex", "semantic_scholar", "crossref")}
+    service = ResearchService(
+        config=ResearchConfig(cache_ttl_hours=24),
+        storage=ResearchStorage(tmp_path / "cache.sqlite3"),
+        clients=clients,
+    )
+    result = service.search(queries=["electronics"], limit=1)
+    assert "Baja SAE electronics" in result["queries"]
+    assert "electronics off-road vehicle Formula SAE" in result["queries"]
+    assert any("thesis" in query for query in result["queries"])
+    assert result["filters"]["baja_context"] is True
+    assert result["filters"]["prefer_theses"] is True

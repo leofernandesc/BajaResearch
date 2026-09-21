@@ -69,11 +69,16 @@ CROSSREF_MAILTO=seu-email@exemplo.com
 BAJA_RESEARCH_CACHE_TTL_HOURS=24
 BAJA_RESEARCH_REQUEST_TIMEOUT_SECONDS=15
 BAJA_RESEARCH_MAX_RETRIES=2
+BAJA_RESEARCH_VALIDATE_LINKS=true
+BAJA_RESEARCH_LINK_TIMEOUT_SECONDS=6
 ```
 
 `OPENALEX_API_KEY` é opcional. `SEMANTIC_SCHOLAR_API_KEY` é opcional e, quando
 presente, é enviado no header `x-api-key`. `CROSSREF_MAILTO` é opcional, mas
-recomendado para o pool educado da Crossref.
+recomendado para o pool educado da Crossref. `BAJA_RESEARCH_VALIDATE_LINKS=true`
+evita expor links de artigos que não respondem; defina `false` apenas para
+diagnóstico. A validação adiciona no máximo uma verificação curta para cada
+URL dos resultados finais.
 
 ## Instalação/ativação no Hermes
 
@@ -203,6 +208,10 @@ Research não lê nem registra credenciais ou conteúdo da pasta de sessão.
 - `httpx` ausente: instale-o no venv indicado acima e reinicie o Hermes.
 - HTTP 429: o resultado ainda pode ser útil; o JSON informa a fonte limitada e
   usa as demais. Reduza a quantidade de consultas ou configure as chaves.
+- Link inválido/indisponível: o resultado permanece bibliograficamente útil
+  quando tem DOI, mas a URL não é exibida até passar pela verificação. Um
+  status `unknown` não significa que o trabalho não existe; significa que a
+  disponibilidade não pôde ser confirmada naquele momento.
 - OpenAlex sem chave: isso é permitido; a disponibilidade real é informada
   pelo status da consulta.
 - Nenhum resultado: tente consultas em inglês mais específicas, remova um
@@ -216,9 +225,19 @@ Research não lê nem registra credenciais ou conteúdo da pasta de sessão.
 ## Limitações atuais
 
 - Query expansion é uma instrução para o Hermes/LLM; o plugin recebe a lista
-  de consultas e não tenta adivinhar a intenção por regras rígidas.
+  de consultas e não tenta adivinhar a intenção por regras rígidas. Há apenas
+  uma salvaguarda pequena para adicionar contexto Baja/Formula SAE/off-road e
+  uma variante de tese quando a consulta recebida é ampla.
 - O ranking é determinístico e anterior à análise do LLM, mas não substitui
-  revisão acadêmica humana.
+  revisão acadêmica humana. Consultas amplas mantêm contexto Baja/Formula
+  SAE/off-road/veículo com `baja_context=true`; `prefer_theses=true` (padrão)
+  prioriza teses, dissertações, monografias e repositórios quando a fonte
+  fornece esse sinal. Isso é uma preferência, não uma garantia de que todo
+  resultado será TCC.
+- Links passam por verificação HTTP leve antes de serem expostos. Links 4xx
+  são omitidos; 429, 5xx e falhas de rede ficam como `unknown` e também não
+  são apresentados como links utilizáveis. O DOI retornado pela fonte pode
+  continuar disponível como identificador bibliográfico.
 - As APIs podem limitar ou alterar resultados; falhas parciais são reportadas.
 - Não há download/processamento de PDF, RAG, biblioteca interna, usuários,
   frontend, servidor web ou sincronização entre computadores.

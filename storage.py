@@ -26,10 +26,14 @@ CREATE TABLE IF NOT EXISTS papers (
     abstract TEXT,
     year INTEGER,
     venue TEXT,
+    document_type TEXT,
     authors_json TEXT NOT NULL,
     citation_count INTEGER,
     url TEXT,
     open_access_url TEXT,
+    verified_url TEXT,
+    verified_open_access_url TEXT,
+    link_status_json TEXT NOT NULL DEFAULT '{}',
     topics_json TEXT NOT NULL,
     sources_json TEXT NOT NULL,
     source_scores_json TEXT NOT NULL,
@@ -106,6 +110,18 @@ class ResearchStorage:
     def initialize(self) -> None:
         with self._lock, self._connection() as connection:
             connection.executescript(SCHEMA)
+            paper_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(papers)").fetchall()
+            }
+            for name, definition in (
+                ("document_type", "TEXT"),
+                ("verified_url", "TEXT"),
+                ("verified_open_access_url", "TEXT"),
+                ("link_status_json", "TEXT NOT NULL DEFAULT '{}'"),
+            ):
+                if name not in paper_columns:
+                    connection.execute(f"ALTER TABLE papers ADD COLUMN {name} {definition}")
             # Keep databases created by early MVP revisions usable after the
             # cache gained a distinction between returned and total results.
             columns = {
@@ -131,10 +147,14 @@ class ResearchStorage:
             paper.abstract,
             paper.year,
             paper.venue,
+            paper.document_type,
             _json(paper.authors),
             paper.citation_count,
             paper.url,
             paper.open_access_url,
+            paper.verified_url,
+            paper.verified_open_access_url,
+            _json(paper.link_status),
             _json(paper.topics),
             _json(paper.sources),
             _json(paper.source_scores),
@@ -183,14 +203,15 @@ class ResearchStorage:
                     merged.internal_id = existing.internal_id
                     connection.execute(
                         """UPDATE papers SET doi=?, openalex_id=?, semantic_scholar_id=?,
-                           title=?, abstract=?, year=?, venue=?, authors_json=?,
-                           citation_count=?, url=?, open_access_url=?, topics_json=?,
+                           title=?, abstract=?, year=?, venue=?, document_type=?, authors_json=?,
+                           citation_count=?, url=?, open_access_url=?, verified_url=?,
+                           verified_open_access_url=?, link_status_json=?, topics_json=?,
                            sources_json=?, source_scores_json=?, metadata_json=?,
                            ranking_score=?, score_details_json=?, updated_at=?
                            WHERE internal_id=?""",
                         self._paper_values(
                             merged, created_at=existing_row["created_at"], updated_at=now
-                        )[1:18] + (now, existing.internal_id),
+                        )[1:22] + (now, existing.internal_id),
                     )
                     stored.append(merged)
                     continue
@@ -198,11 +219,11 @@ class ResearchStorage:
                 connection.execute(
                     """INSERT INTO papers (
                        internal_id, doi, openalex_id, semantic_scholar_id, title,
-                       abstract, year, venue, authors_json, citation_count, url,
-                       open_access_url, topics_json, sources_json, source_scores_json,
-                       metadata_json, ranking_score, score_details_json, created_at,
-                       updated_at
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       abstract, year, venue, document_type, authors_json, citation_count, url,
+                       open_access_url, verified_url, verified_open_access_url, link_status_json,
+                       topics_json, sources_json, source_scores_json, metadata_json,
+                       ranking_score, score_details_json, created_at, updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     self._paper_values(incoming, created_at=now, updated_at=now),
                 )
                 stored.append(incoming)

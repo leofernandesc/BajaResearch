@@ -29,14 +29,28 @@ records. It is not a general web search tool.
    suspension, dynamics, brakes, powertrain, CVT, ergonomics, safety,
    embedded systems, data acquisition, telemetry, sensors, CAN, project
    management, optimization, and testing are all valid examples.
-4. Call `search_academic_papers` with the complete query list. Its `limit` is
-   the final number of records, not the per-source request size.
-5. Use `get_paper` for detail, `find_related_papers` for follow-up discovery,
+4. For a broad domain request such as “eletrônica”, preserve the Baja
+   application in at least one query (for example, Baja SAE vehicle
+   electronics, off-road telemetry, or Formula SAE embedded systems). Do not
+   return generic power-electronics papers as the primary answer merely
+   because they match the broad word.
+5. When the user asks for detail, a monograph, TCC, thesis, dissertation, or
+   extensive work—or when the topic is broad—include a thesis/repository
+   query, such as `undergraduate thesis`, `dissertation`, or `institutional
+   repository`. The tool defaults to `prefer_theses=true` and adds a small
+   retrieval safety net when the LLM omitted that variant.
+6. Call `search_academic_papers` with the complete query list. Its `limit` is
+   the final number of records, not the per-source request size. Keep
+   `baja_context=true` unless the user explicitly requests a domain-only
+   search, and keep `prefer_theses=true` for detailed work.
+7. Use `get_paper` for detail, `find_related_papers` for follow-up discovery,
    and `format_citation` when the user requests ABNT or BibTeX.
-6. Present no more than five papers by default. For each, include the exact
+8. Present no more than five papers by default. For each, include the exact
    returned title, shortened author list, year, venue when available, DOI or
-   URL, and a short explanation of relevance. Do not paste full abstracts.
-7. Answer in the user's language and mention that the user can ask for more
+   verified URL, and a short explanation of relevance. Do not paste full
+   abstracts. If the tool reports `invalid` or `unknown` link verification,
+   do not print that raw URL; say that no verified access link was returned.
+9. Answer in the user's language and mention that the user can ask for more
    detail, related papers, date/open-access filters, a broader search, or a
    citation.
 
@@ -49,7 +63,10 @@ records. It is not a general web search tool.
   tools. A relevance explanation is an LLM interpretation and should be
   phrased as such.
 - If a field is absent, say it was not returned. Do not infer that a paper is
-  open access merely because a DOI or publisher page exists.
+   open access merely because a DOI or publisher page exists.
+- A DOI is a bibliographic identifier returned by a source; only expose a
+  publisher/repository URL when the tool marks it as verified. Never copy a
+  stale or unverified URL from a raw source payload.
 - If one source is rate-limited or unavailable, use the remaining results and
   briefly disclose the partial availability. Do not imply that all three
   sources answered.

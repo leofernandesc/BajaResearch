@@ -33,6 +33,16 @@ SEARCH_SCHEMA = {
             "year_from": {"type": ["integer", "null"], "minimum": 1000, "maximum": 2200},
             "year_to": {"type": ["integer", "null"], "minimum": 1000, "maximum": 2200},
             "open_access_only": {"type": "boolean", "default": False},
+            "prefer_theses": {
+                "type": "boolean",
+                "default": True,
+                "description": "Prefer theses, dissertations, monographs and institutional-repository work when available.",
+            },
+            "baja_context": {
+                "type": "boolean",
+                "default": True,
+                "description": "Keep Baja SAE, Formula SAE, off-road or automotive context in the search expansion and ranking.",
+            },
             "original_query": {"type": ["string", "null"], "description": "The user's original question, when useful for diagnostics."},
             "refresh_cache": {"type": "boolean", "default": False, "description": "Ignore a fresh identical search cache entry."},
         },
@@ -131,6 +141,12 @@ def validate_search_args(args: Mapping[str, Any]) -> dict[str, Any]:
     refresh_cache = args.get("refresh_cache", False)
     if not isinstance(refresh_cache, bool):
         raise ValueError("refresh_cache must be boolean")
+    prefer_theses = args.get("prefer_theses", True)
+    if not isinstance(prefer_theses, bool):
+        raise ValueError("prefer_theses must be boolean")
+    baja_context = args.get("baja_context", True)
+    if not isinstance(baja_context, bool):
+        raise ValueError("baja_context must be boolean")
     original_query = args.get("original_query")
     if original_query is not None and not isinstance(original_query, str):
         raise ValueError("original_query must be a string when supplied")
@@ -140,6 +156,8 @@ def validate_search_args(args: Mapping[str, Any]) -> dict[str, Any]:
         "year_from": year_from,
         "year_to": year_to,
         "open_access_only": open_access_only,
+        "prefer_theses": prefer_theses,
+        "baja_context": baja_context,
         "original_query": original_query.strip() if original_query else None,
         "refresh_cache": refresh_cache,
     }

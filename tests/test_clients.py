@@ -3,6 +3,7 @@ import httpx
 from clients.base import SourceError
 from clients.crossref import CrossrefClient
 from clients.http import JsonHttpClient
+from clients.link_validator import LinkValidator
 from clients.openalex import OpenAlexClient
 from clients.semantic_scholar import SemanticScholarClient
 from models import Paper
@@ -103,6 +104,33 @@ def test_crossref_does_not_claim_open_access_without_license():
     assert paper.open_access_url is None
 
 
+def test_link_validator_rejects_dead_link_and_accepts_head_405_get():
+    calls = []
+
+    def handler(request):
+        calls.append((request.method, str(request.url)))
+        if request.url.path == "/dead":
+            return httpx.Response(404, request=request)
+        if request.method == "HEAD":
+            return httpx.Response(405, request=request)
+        return httpx.Response(206, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
+    validator = LinkValidator(http_client=client)
+    try:
+        dead = validator.check("https://example.test/dead")
+        live = validator.check("https://example.test/live")
+    finally:
+        validator.close()
+        client.close()
+    assert dead.status == "invalid"
+    assert dead.http_status == 404
+    assert live.status == "valid"
+    assert live.http_status == 206
+    assert ("HEAD", "https://example.test/live") in calls
+    assert ("GET", "https://example.test/live") in calls
+
+
 class _FakeClient:
     def __init__(self, papers=None, error=None):
         self.papers = papers or []
@@ -145,4 +173,3 @@ def test_partial_source_failure_keeps_results_and_reports_429(tmp_path):
     assert result["sources"]["semantic_scholar"]["status"] == "error"
     assert result["sources"]["semantic_scholar"]["errors"][0]["code"] == "rate_limited"
     assert result["warnings"]
-

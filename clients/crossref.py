@@ -63,7 +63,8 @@ def _work_to_paper(item: Mapping[str, Any]) -> Paper | None:
     title = title or doi or "Untitled paper"
     url = text(item.get("URL")) or (f"https://doi.org/{doi}" if doi else None)
     oa_url = _licensed_pdf(item)
-    metadata: dict[str, Any] = {"crossref_type": text(item.get("type"))}
+    document_type = text(item.get("type"))
+    metadata: dict[str, Any] = {"crossref_type": document_type}
     if as_list(item.get("license")):
         metadata["license_present"] = True
     return Paper(
@@ -73,6 +74,7 @@ def _work_to_paper(item: Mapping[str, Any]) -> Paper | None:
         year=_year(item),
         abstract=text(item.get("abstract")),
         venue=first_text(item.get("container-title")),
+        document_type=document_type,
         doi=doi,
         citation_count=item.get("is-referenced-by-count"),
         url=url,

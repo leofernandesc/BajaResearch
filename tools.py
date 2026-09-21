@@ -15,6 +15,7 @@ from typing import Any, Callable, Iterable, Mapping
 try:
     from .clients.base import SourceError, SourceResult, timed_call
     from .clients.crossref import CrossrefClient
+    from .clients.link_validator import LinkValidator
     from .clients.openalex import OpenAlexClient
     from .clients.semantic_scholar import SemanticScholarClient
     from .models import Paper, deduplicate_papers, merge_papers, normalize_doi
@@ -34,6 +35,7 @@ try:
 except ImportError:  # pragma: no cover - direct module imports
     from clients.base import SourceError, SourceResult, timed_call
     from clients.crossref import CrossrefClient
+    from clients.link_validator import LinkValidator
     from clients.openalex import OpenAlexClient
     from clients.semantic_scholar import SemanticScholarClient
     from models import Paper, deduplicate_papers, merge_papers, normalize_doi
@@ -63,6 +65,8 @@ class ResearchConfig:
     openalex_api_key: str | None = None
     semantic_scholar_api_key: str | None = None
     crossref_mailto: str | None = None
+    validate_links: bool = True
+    link_timeout_seconds: float = 6.0
 
 
 def _env_float(name: str, default: float) -> float:
@@ -77,6 +81,13 @@ def _env_int(name: str, default: int) -> int:
         return max(0, min(4, int(os.getenv(name, str(default)))))
     except (TypeError, ValueError):
         return default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _context_setting(ctx: Any, name: str, default: Any) -> Any:
@@ -111,6 +122,8 @@ def _config_from_context(ctx: Any) -> ResearchConfig:
         openalex_api_key=os.getenv("OPENALEX_API_KEY") or None,
         semantic_scholar_api_key=os.getenv("SEMANTIC_SCHOLAR_API_KEY") or None,
         crossref_mailto=os.getenv("CROSSREF_MAILTO") or None,
+        validate_links=_env_bool("BAJA_RESEARCH_VALIDATE_LINKS", True),
+        link_timeout_seconds=_env_float("BAJA_RESEARCH_LINK_TIMEOUT_SECONDS", 6.0),
     )
 
 
@@ -123,6 +136,47 @@ def _cache_key(queries: list[str], filters: Mapping[str, Any]) -> str:
     )
 
 
+_BAJA_CONTEXT_MARKERS = (
+    "baja", "formula sae", "formula student", "off road", "off-road", "offroad",
+    "atv", "automotive", "vehicle", "motorsport", "telemetry", "can bus",
+)
+_THESIS_QUERY_MARKERS = (
+    "thesis", "dissertation", "tcc", "monograph", "monografia",
+    "undergraduate thesis", "master thesis", "doctoral thesis",
+    "institutional repository", "repository", "repositorio",
+)
+
+
+def _expand_plugin_queries(
+    queries: list[str], *, baja_context: bool, prefer_theses: bool
+) -> list[str]:
+    """Add conservative retrieval guards without replacing LLM expansion.
+
+    Hermes still owns the semantic expansion. These additions protect the
+    plugin when a broad request such as ``electronics`` reaches the tool
+    without any Baja/vehicle context or a thesis-oriented variant.
+    """
+    expanded = list(queries)
+    joined = " ".join(expanded).casefold()
+    base = expanded[0]
+    if baja_context and not any(marker in joined for marker in _BAJA_CONTEXT_MARKERS):
+        expanded.extend(
+            (
+                f"Baja SAE {base}",
+                f"{base} off-road vehicle Formula SAE",
+            )
+        )
+    joined = " ".join(expanded).casefold()
+    if prefer_theses and not any(marker in joined for marker in _THESIS_QUERY_MARKERS):
+        expanded.extend(
+            (
+                f"{base} Baja SAE thesis dissertation",
+                f"{base} off-road vehicle undergraduate thesis institutional repository",
+            )
+        )
+    return list(dict.fromkeys(expanded))[:8]
+
+
 class ResearchService:
     """Coordinate sources, cache, deduplication, ranking and formatting."""
 
@@ -132,6 +186,7 @@ class ResearchService:
         config: ResearchConfig | None = None,
         storage: ResearchStorage | None = None,
         clients: Mapping[str, Any] | None = None,
+        link_validator: LinkValidator | None = None,
     ) -> None:
         self.config = config or ResearchConfig()
         self.storage = storage or ResearchStorage(
@@ -157,6 +212,9 @@ class ResearchService:
                 ),
             }
         )
+        self.link_validator = link_validator or LinkValidator(
+            timeout=self.config.link_timeout_seconds
+        )
         self.last_status: dict[str, Any] = {}
 
     @classmethod
@@ -176,6 +234,61 @@ class ResearchService:
                     close()
                 except Exception:
                     logger.debug("source client close failed", exc_info=True)
+        self.link_validator.close()
+
+    def _validate_papers(self, papers: list[Paper]) -> None:
+        """Mark only successfully reachable links as public output links."""
+        if not self.config.validate_links or not papers:
+            return
+        urls = [
+            url
+            for paper in papers
+            for url in (paper.url, paper.open_access_url)
+            if url
+        ]
+        checks = self.link_validator.check_many(urls)
+        counts: dict[str, int] = {"valid": 0, "invalid": 0, "unknown": 0}
+        for paper in papers:
+            for field, raw_url in (
+                ("url", paper.url),
+                ("open_access_url", paper.open_access_url),
+            ):
+                if not raw_url:
+                    paper.link_status[field] = "not_provided"
+                    continue
+                check = checks.get(raw_url)
+                status = check.status if check is not None else "unknown"
+                paper.link_status[field] = status
+                if status == "valid":
+                    verified = check.final_url or raw_url
+                    if field == "url":
+                        paper.verified_url = verified
+                    else:
+                        paper.verified_open_access_url = verified
+                counts[status] = counts.get(status, 0) + 1
+        logger.info(
+            "event=link_validation checked=%d valid=%d invalid=%d unknown=%d",
+            len(urls),
+            counts.get("valid", 0),
+            counts.get("invalid", 0),
+            counts.get("unknown", 0),
+        )
+
+    @staticmethod
+    def _prioritize_explicit_context(papers: list[Paper]) -> list[Paper]:
+        """Keep generic-domain fallback papers behind explicit Baja context.
+
+        A broad query can still need general automotive literature, but when
+        the retrieval set contains explicit Baja/Formula/off-road/ATV or
+        motorsport records, those are the useful first-class answer.
+        """
+        contextual = [
+            paper for paper in papers if (paper.score_details.get("context_signal") or 0.0) >= 0.75
+        ]
+        if not contextual:
+            return papers
+        contextual_ids = {paper.internal_id for paper in contextual}
+        return contextual + [paper for paper in papers if paper.internal_id not in contextual_ids]
 
     def _source_info(self, source: str, client: Any) -> dict[str, Any]:
         return {
@@ -305,26 +418,36 @@ class ResearchService:
         year_from: int | None = None,
         year_to: int | None = None,
         open_access_only: bool = False,
+        prefer_theses: bool = True,
+        baja_context: bool = True,
         original_query: str | None = None,
         refresh_cache: bool = False,
     ) -> dict[str, Any]:
+        effective_queries = _expand_plugin_queries(
+            queries, baja_context=baja_context, prefer_theses=prefer_theses
+        )
         filters = {
             "limit": limit,
             "year_from": year_from,
             "year_to": year_to,
             "open_access_only": open_access_only,
+            "prefer_theses": prefer_theses,
+            "baja_context": baja_context,
         }
-        key = _cache_key(queries, filters)
+        key = _cache_key(effective_queries, filters)
         if not refresh_cache and self.config.cache_ttl_hours > 0:
             cached = self.storage.get_cached_search(key, ttl_hours=self.config.cache_ttl_hours)
             if cached is not None:
                 statuses = cached.get("source_status", {})
                 self.last_status = dict(statuses)
-                logger.info("event=academic_search cache=hit returned=%d", len(cached["papers"]))
+                cached_papers = cached["papers"][:limit]
+                self._validate_papers(cached_papers)
+                self.storage.upsert_papers(cached_papers)
+                logger.info("event=academic_search cache=hit returned=%d", len(cached_papers))
                 return self._search_response(
-                    queries=queries,
+                    queries=effective_queries,
                     filters=filters,
-                    papers=cached["papers"][:limit],
+                    papers=cached_papers,
                     total_found=int(cached.get("total_found", len(cached["papers"]))),
                     statuses=statuses,
                     cache_hit=True,
@@ -333,7 +456,7 @@ class ResearchService:
 
         source_limit = max(8, min(50, limit * 3))
         operations: list[tuple[str, str | None, Callable[[], list[Paper]]]] = []
-        for query in queries:
+        for query in effective_queries:
             for source, client in self.clients.items():
                 operations.append(
                     (
@@ -353,15 +476,29 @@ class ResearchService:
         self.last_status = statuses
         all_papers = [paper for result in source_results if result.error is None for paper in result.papers]
         unique = deduplicate_papers(all_papers)
-        ranked = rank_papers(unique, queries, limit=None)
+        ranked = rank_papers(
+            unique,
+            effective_queries,
+            limit=None,
+            prefer_theses=prefer_theses,
+            require_context=baja_context,
+        )
         stored = self.storage.upsert_papers(ranked)
-        ranked = rank_papers(stored, queries, limit=None)
+        ranked = rank_papers(
+            stored,
+            effective_queries,
+            limit=None,
+            prefer_theses=prefer_theses,
+            require_context=baja_context,
+        )
+        ranked = self._prioritize_explicit_context(ranked)
         final = ranked[:limit]
-        self.storage.upsert_papers(final)
+        self._validate_papers(final)
+        final = self.storage.upsert_papers(final)
         self.storage.save_search(
             cache_key=key,
             original_query=original_query,
-            expanded_queries=queries,
+            expanded_queries=effective_queries,
             filters=filters,
             papers=final,
             source_status=statuses,
@@ -369,12 +506,12 @@ class ResearchService:
         )
         logger.info(
             "event=academic_search cache=miss queries=%d unique_results=%d returned=%d",
-            len(queries),
+            len(effective_queries),
             len(unique),
             len(final),
         )
         return self._search_response(
-            queries=queries,
+            queries=effective_queries,
             filters=filters,
             papers=final,
             total_found=len(unique),
@@ -385,6 +522,8 @@ class ResearchService:
     def _get_model(self, identifier: str) -> tuple[Paper | None, dict[str, Any], list[str]]:
         cached = self.storage.find_paper(identifier)
         if cached is not None:
+            self._validate_papers([cached])
+            cached = self.storage.upsert_papers([cached])[0]
             return cached, self.last_status or self._not_tested_status(), []
         operations: list[tuple[str, str | None, Callable[[], list[Paper]]]] = []
         for source, client in self.clients.items():
@@ -409,6 +548,8 @@ class ResearchService:
         for paper in papers[1:]:
             merged = merge_papers(merged, paper)
         stored = self.storage.upsert_papers([merged])
+        self._validate_papers(stored)
+        stored = self.storage.upsert_papers(stored)
         return (stored[0] if stored else merged), statuses, self._warnings(statuses)
 
     def _not_tested_status(self) -> dict[str, Any]:
@@ -471,9 +612,27 @@ class ResearchService:
             related.extend(Paper.from_dict(item) for item in fallback.get("results", []))
         related = deduplicate_papers(related)
         related = [candidate for candidate in related if not self._same_paper(candidate, paper)]
-        related = rank_papers(related, [paper.title, *paper.topics], limit=limit)
+        related = rank_papers(
+            related,
+            [paper.title, *paper.topics],
+            limit=None,
+            prefer_theses=True,
+            require_context=True,
+        )
+        related = self._prioritize_explicit_context(related)
+        related = related[:limit]
         stored = self.storage.upsert_papers(related)
-        related = rank_papers(stored, [paper.title, *paper.topics], limit=limit)
+        self._validate_papers(stored)
+        stored = self.storage.upsert_papers(stored)
+        related = rank_papers(
+            stored,
+            [paper.title, *paper.topics],
+            limit=None,
+            prefer_theses=True,
+            require_context=True,
+        )
+        related = self._prioritize_explicit_context(related)
+        related = related[:limit]
         warnings = self._warnings(statuses)
         return {
             "ok": bool(related) or any(status.get("status") == "ok" for status in statuses.values()),
@@ -549,8 +708,10 @@ def _format_abnt(paper: Paper) -> str:
         parts.append(str(paper.year))
     if paper.doi:
         parts.append(f"DOI: {paper.doi}")
-    elif paper.url:
-        parts.append(f"Disponível em: {paper.url}")
+    else:
+        public_url = paper.to_dict(compact=True).get("url")
+        if public_url:
+            parts.append(f"Disponível em: {public_url}")
     return ". ".join(parts) + ("." if parts else "")
 
 
@@ -567,8 +728,10 @@ def _format_bibtex(paper: Paper) -> str:
         fields.append(("journal", paper.venue))
     if paper.doi:
         fields.append(("doi", paper.doi))
-    elif paper.url:
-        fields.append(("url", paper.url))
+    else:
+        public_url = paper.to_dict(compact=True).get("url")
+        if public_url:
+            fields.append(("url", public_url))
     lines = [f"@article{{{key},"]
     lines.extend(f"  {name} = {{{_bibtex_value(value)}}}," for name, value in fields)
     lines.append("}")

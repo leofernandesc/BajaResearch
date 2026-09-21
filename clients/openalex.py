@@ -87,6 +87,7 @@ def _work_to_paper(work: Mapping[str, Any]) -> Paper | None:
 
     raw_doi = work.get("doi") or as_mapping(work.get("ids")).get("doi")
     doi = normalize_doi(raw_doi)
+    document_type = text(work.get("type"))
     oa_id = source_id(work.get("id"), prefix="https://openalex.org/")
     if oa_id and oa_id.lower().startswith("openalex:"):
         oa_id = oa_id.split(":", 1)[1]
@@ -102,6 +103,8 @@ def _work_to_paper(work: Mapping[str, Any]) -> Paper | None:
             metadata["openalex_relevance_score"] = float(raw_relevance)
         except (TypeError, ValueError):
             pass
+    if document_type:
+        metadata["openalex_type"] = document_type
     if is_oa:
         metadata["open_access_confirmed"] = True
     return Paper(
@@ -111,6 +114,7 @@ def _work_to_paper(work: Mapping[str, Any]) -> Paper | None:
         year=year_from_payload(work.get("publication_year")),
         abstract=abstract_from_inverted_index(work.get("abstract_inverted_index")),
         venue=text(source.get("display_name") or host_venue),
+        document_type=document_type,
         doi=doi,
         openalex_id=oa_id,
         citation_count=work.get("cited_by_count"),

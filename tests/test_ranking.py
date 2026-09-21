@@ -26,6 +26,7 @@ def test_direct_query_match_beats_high_citation_off_topic_paper():
     assert set(ranked[0].score_details) == {
         "query_relevance", "source_relevance", "multi_source",
         "citation_signal", "recency_signal", "context_signal",
+        "thesis_signal", "context_gate",
     }
 
 
@@ -40,3 +41,56 @@ def test_multiple_sources_and_missing_abstract_are_supported():
     result = rank_papers([paper], ["tubular chassis"], current_year=2026)
     assert result[0].ranking_score is not None
     assert result[0].score_details["multi_source"] == 0.5
+
+
+def test_thesis_preference_and_context_gate_are_visible_in_score_details():
+    thesis = Paper(
+        "",
+        "Electronic telemetry system for Baja SAE vehicle: undergraduate thesis",
+        abstract="Data acquisition and CAN telemetry for an off-road vehicle.",
+        venue="Institutional Repository",
+        document_type="dissertation",
+        year=2022,
+        sources=["openalex"],
+        source_scores={"openalex": 0.5},
+    )
+    generic = Paper(
+        "",
+        "Electronic telemetry system design",
+        abstract="A general electronics design study.",
+        year=2024,
+        citation_count=500,
+        sources=["crossref"],
+        source_scores={"crossref": 0.35},
+    )
+    ranked = rank_papers(
+        [generic, thesis],
+        ["electronics Baja SAE vehicle"],
+        current_year=2026,
+        prefer_theses=True,
+        require_context=True,
+    )
+    assert ranked[0].title == thesis.title
+    assert ranked[0].score_details["thesis_signal"] == 1.0
+    assert ranked[0].score_details["context_gate"] == 1.0
+    assert ranked[1].score_details["context_gate"] == 0.55
+
+
+def test_spanish_baja_word_does_not_fake_baja_sae_context():
+    paper = Paper(
+        "",
+        "Advanced wireless power transfer technologies",
+        abstract="La propuesta mejora la baja eficiencia del rectificador.",
+        document_type="dissertation",
+        year=2021,
+        sources=["openalex"],
+    )
+    ranked = rank_papers(
+        [paper],
+        ["electronics Baja SAE"],
+        current_year=2026,
+        prefer_theses=True,
+        require_context=True,
+    )
+    assert ranked[0].score_details["context_signal"] == 0.0
+    assert ranked[0].score_details["context_gate"] == 0.55

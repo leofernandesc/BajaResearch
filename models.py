@@ -106,6 +106,7 @@ class Paper:
     year: int | None = None
     abstract: str | None = None
     venue: str | None = None
+    document_type: str | None = None
     doi: str | None = None
     openalex_id: str | None = None
     semantic_scholar_id: str | None = None
@@ -118,6 +119,9 @@ class Paper:
     ranking_score: float | None = None
     score_details: dict[str, float] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
+    verified_url: str | None = None
+    verified_open_access_url: str | None = None
+    link_status: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.title = _clean_text(self.title) or "Untitled paper"
@@ -125,8 +129,11 @@ class Paper:
         self.year = _clean_year(self.year)
         self.abstract = _clean_text(self.abstract)
         self.venue = _clean_text(self.venue)
+        self.document_type = _clean_text(self.document_type)
         self.url = _clean_text(self.url)
         self.open_access_url = _clean_text(self.open_access_url)
+        self.verified_url = _clean_text(self.verified_url)
+        self.verified_open_access_url = _clean_text(self.verified_open_access_url)
         self.authors = _unique_strings(self.authors)
         self.topics = _unique_strings(self.topics)
         self.sources = _unique_strings(self.sources)
@@ -141,6 +148,11 @@ class Paper:
             except (TypeError, ValueError):
                 self.citation_count = None
         self.metadata = dict(self.metadata or {})
+        self.link_status = {
+            str(key): str(value)
+            for key, value in (self.link_status or {}).items()
+            if value
+        }
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "Paper":
@@ -152,6 +164,7 @@ class Paper:
             year=value.get("year"),
             abstract=value.get("abstract"),
             venue=value.get("venue"),
+            document_type=value.get("document_type"),
             doi=value.get("doi"),
             openalex_id=value.get("openalex_id"),
             semantic_scholar_id=value.get("semantic_scholar_id"),
@@ -164,7 +177,18 @@ class Paper:
             ranking_score=value.get("ranking_score"),
             score_details=dict(value.get("score_details") or {}),
             metadata=dict(value.get("metadata") or {}),
+            verified_url=value.get("verified_url"),
+            verified_open_access_url=value.get("verified_open_access_url"),
+            link_status=dict(value.get("link_status") or value.get("link_verification") or {}),
         )
+
+    def _public_url(self, field: str, raw: str | None, verified: str | None) -> str | None:
+        status = self.link_status.get(field)
+        if status == "valid":
+            return verified or raw
+        if status in {"invalid", "unknown"}:
+            return None
+        return raw
 
     def to_dict(self, *, compact: bool = True) -> dict[str, Any]:
         """Serialize only normalized fields; never expose raw API payloads."""
@@ -175,12 +199,15 @@ class Paper:
             "year": self.year,
             "abstract": self.abstract if not compact else None,
             "venue": self.venue,
+            "document_type": self.document_type,
             "doi": self.doi,
             "openalex_id": self.openalex_id,
             "semantic_scholar_id": self.semantic_scholar_id,
             "citation_count": self.citation_count,
-            "url": self.url,
-            "open_access_url": self.open_access_url,
+            "url": self._public_url("url", self.url, self.verified_url),
+            "open_access_url": self._public_url(
+                "open_access_url", self.open_access_url, self.verified_open_access_url
+            ),
             "topics": self.topics[:20],
             "sources": self.sources,
             "source_scores": self.source_scores,
@@ -189,6 +216,8 @@ class Paper:
             result.pop("abstract")
             if self.abstract:
                 result["abstract_snippet"] = self.abstract[:700]
+        if self.link_status:
+            result["link_verification"] = dict(self.link_status)
         if self.ranking_score is not None:
             result["ranking_score"] = round(float(self.ranking_score), 6)
         if self.score_details:
@@ -277,6 +306,7 @@ def merge_papers(left: Paper, right: Paper) -> Paper:
         year=choose_value(left.year, right.year),
         abstract=choose_text(left.abstract, right.abstract),
         venue=choose_text(left.venue, right.venue),
+        document_type=choose_text(left.document_type, right.document_type),
         doi=left.doi or right.doi,
         openalex_id=left.openalex_id or right.openalex_id,
         semantic_scholar_id=left.semantic_scholar_id or right.semantic_scholar_id,
@@ -292,6 +322,9 @@ def merge_papers(left: Paper, right: Paper) -> Paper:
         ranking_score=right.ranking_score if right.ranking_score is not None else left.ranking_score,
         score_details=dict(right.score_details or left.score_details),
         metadata=metadata,
+        verified_url=left.verified_url or right.verified_url,
+        verified_open_access_url=left.verified_open_access_url or right.verified_open_access_url,
+        link_status={**left.link_status, **right.link_status},
     )
     merged.internal_id = make_internal_id(merged)
     return merged
@@ -382,6 +415,7 @@ def paper_from_storage(row: Mapping[str, Any]) -> Paper:
         abstract=value("abstract"),
         year=value("year"),
         venue=value("venue"),
+        document_type=value("document_type"),
         doi=value("doi"),
         openalex_id=value("openalex_id"),
         semantic_scholar_id=value("semantic_scholar_id"),
@@ -395,6 +429,9 @@ def paper_from_storage(row: Mapping[str, Any]) -> Paper:
         metadata=loads("metadata_json", {}),
         ranking_score=value("ranking_score"),
         score_details=loads("score_details_json", {}),
+        verified_url=value("verified_url"),
+        verified_open_access_url=value("verified_open_access_url"),
+        link_status=loads("link_status_json", {}),
     )
 
 

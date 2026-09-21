@@ -18,9 +18,18 @@ _STOPWORDS = {
     "into", "is", "of", "on", "or", "the", "to", "with", "da", "das", "de",
     "do", "dos", "e", "em", "para", "por", "um", "uma", "que", "na", "no",
 }
-_CONTEXT_TERMS = {
-    "baja", "baja sae", "formula sae", "formula student", "off road",
-    "offroad", "atv", "automotive", "vehicle dynamics", "motorsport",
+_EXPLICIT_CONTEXT_TERMS = {
+    "baja sae", "formula sae", "formula student", "off road",
+    "offroad", "atv", "motorsport",
+}
+_GENERAL_VEHICLE_TERMS = {"automotive", "vehicle dynamics", "vehicle"}
+_THESIS_TERMS = {
+    "thesis", "dissertation", "tcc", "monograph", "monografia",
+    "undergraduate thesis", "master thesis", "doctoral thesis",
+}
+_REPOSITORY_TERMS = {
+    "repository", "institutional repository", "repositorio", "dspace",
+    "etd", "eprints", "scholarworks", "handle.net", "university archive",
 }
 
 
@@ -37,6 +46,13 @@ def _coverage(needles: set[str], haystack: str) -> float:
         return 0.0
     present = _tokens(haystack)
     return len(needles & present) / len(needles)
+
+
+def _contains_term(haystack: str, term: str) -> bool:
+    """Match normalized words/phrases without substring false positives."""
+    needle = normalize_title(term)
+    padded = f" {haystack} "
+    return bool(needle) and f" {needle} " in padded
 
 
 def _query_relevance(paper: Paper, queries: Iterable[str]) -> float:
@@ -81,9 +97,53 @@ def _recency_signal(paper: Paper, current_year: int) -> float:
 
 
 def _context_signal(paper: Paper) -> float:
-    haystack = normalize_title(" ".join([paper.title, paper.abstract or "", *paper.topics]))
-    matches = sum(1 for term in _CONTEXT_TERMS if normalize_title(term) in haystack)
-    return min(1.0, matches / 2.0)
+    haystack = normalize_title(
+        " ".join([paper.title, paper.abstract or "", *paper.topics])
+    )
+    explicit_matches = sum(
+        1 for term in _EXPLICIT_CONTEXT_TERMS if _contains_term(haystack, term)
+    )
+    if explicit_matches:
+        return min(1.0, 0.8 + 0.1 * max(0, explicit_matches - 1))
+    # A generic mention such as “electric vehicle charging” in an abstract is
+    # not enough to make a paper Baja/vehicle-contextual. General vehicle
+    # signals must be visible in the title, venue, or topics.
+    title_topics = normalize_title(
+        " ".join([paper.title, paper.venue or "", *paper.topics])
+    )
+    general_matches = sum(
+        1
+        for term in _GENERAL_VEHICLE_TERMS
+        if _contains_term(title_topics, term)
+    )
+    return min(0.6, 0.3 * general_matches)
+
+
+def _thesis_signal(paper: Paper) -> float:
+    """Estimate whether a record is a thesis-like, repository-hosted work."""
+    document_type = normalize_title(
+        " ".join(
+            value
+            for value in (
+                paper.document_type,
+                str(paper.metadata.get("openalex_type") or ""),
+                str(paper.metadata.get("crossref_type") or ""),
+            )
+            if value
+        )
+    )
+    haystack = normalize_title(
+        " ".join(
+            [paper.title, paper.venue or "", paper.url or "", *paper.topics]
+        )
+    )
+    if any(term in document_type for term in ("thesis", "dissertation", "monograph")):
+        return 1.0
+    if any(term in haystack for term in _THESIS_TERMS):
+        return 1.0
+    if any(term in haystack for term in _REPOSITORY_TERMS):
+        return 0.45
+    return 0.0
 
 
 def rank_papers(
@@ -92,6 +152,8 @@ def rank_papers(
     *,
     limit: int | None = None,
     current_year: int | None = None,
+    prefer_theses: bool = False,
+    require_context: bool = False,
 ) -> list[Paper]:
     """Rank papers with fixed weights and retain component scores.
 
@@ -112,15 +174,35 @@ def rank_papers(
             "citation_signal": _citation_signal(paper, max_citations),
             "recency_signal": _recency_signal(paper, current_year),
             "context_signal": _context_signal(paper),
+            "thesis_signal": _thesis_signal(paper) if prefer_theses else 0.0,
         }
-        score = (
-            0.55 * components["query_relevance"]
-            + 0.12 * components["source_relevance"]
-            + 0.10 * components["multi_source"]
-            + 0.10 * components["citation_signal"]
-            + 0.05 * components["recency_signal"]
-            + 0.08 * components["context_signal"]
-        )
+        if prefer_theses:
+            score = (
+                0.47 * components["query_relevance"]
+                + 0.10 * components["source_relevance"]
+                + 0.08 * components["multi_source"]
+                + 0.07 * components["citation_signal"]
+                + 0.03 * components["recency_signal"]
+                + 0.07 * components["context_signal"]
+                + 0.18 * components["thesis_signal"]
+            )
+        else:
+            score = (
+                0.55 * components["query_relevance"]
+                + 0.12 * components["source_relevance"]
+                + 0.10 * components["multi_source"]
+                + 0.10 * components["citation_signal"]
+                + 0.05 * components["recency_signal"]
+                + 0.08 * components["context_signal"]
+            )
+        if require_context and components["context_signal"] == 0.0:
+            # Keep general-domain fallback papers available, but make a paper
+            # with no Baja/vehicle context lose to an otherwise comparable
+            # contextual result.
+            score *= 0.55
+            components["context_gate"] = 0.55
+        else:
+            components["context_gate"] = 1.0
         ranked.append(replace(paper, ranking_score=score, score_details=components))
 
     ranked.sort(
