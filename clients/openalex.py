@@ -1,4 +1,4 @@
-"""OpenAlex works client (the primary BAJA Research source)."""
+"""OpenAlex works client for global academic discovery."""
 
 from __future__ import annotations
 
@@ -135,8 +135,8 @@ class OpenAlexClient:
         self,
         *,
         api_key: str | None = None,
-        timeout: float = 15.0,
-        max_retries: int = 2,
+        timeout: float = 8.0,
+        max_retries: int = 1,
         http: JsonHttpClient | None = None,
     ) -> None:
         self.api_key = api_key or os.getenv("OPENALEX_API_KEY") or None

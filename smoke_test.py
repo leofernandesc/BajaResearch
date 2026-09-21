@@ -21,19 +21,23 @@ def main() -> int:
         action="append",
         help="Technical query; repeat to test complementary queries.",
     )
+    parser.add_argument(
+        "--technical-focus",
+        help="Topic used by the hard relevance gate; defaults to the first query.",
+    )
     parser.add_argument("--limit", type=int, default=5)
     parser.add_argument("--year-from", type=int)
     parser.add_argument("--year-to", type=int)
-    access_group = parser.add_mutually_exclusive_group()
-    access_group.add_argument(
-        "--open-access-only",
-        action="store_true",
-        help="Explicitly keep the default: only verified open-access papers.",
+    parser.add_argument(
+        "--document-preference",
+        choices=("long_form_first", "articles_first"),
+        default="long_form_first",
+        help="Order document classes after strict relevance and PDF checks.",
     )
-    access_group.add_argument(
-        "--include-paywalled",
+    parser.add_argument(
+        "--include-electric-vehicles",
         action="store_true",
-        help="Include non-open-access records for diagnostic comparison.",
+        help="Allow EV/hybrid/fuel-cell work only for an explicit EV smoke test.",
     )
     parser.add_argument(
         "--db",
@@ -42,6 +46,7 @@ def main() -> int:
     )
     args = parser.parse_args()
     queries = args.query or [DEFAULT_QUERY]
+    technical_focus = args.technical_focus or queries[0]
     service = ResearchService(
         config=ResearchConfig(),
         storage=ResearchStorage(args.db, ttl_hours=0),
@@ -49,16 +54,25 @@ def main() -> int:
     try:
         response = service.search(
             queries=queries,
+            technical_focus=technical_focus,
             limit=args.limit,
             year_from=args.year_from,
             year_to=args.year_to,
-            open_access_only=not args.include_paywalled,
+            document_preference=args.document_preference,
+            exclude_electric_vehicles=not args.include_electric_vehicles,
             refresh_cache=True,
         )
     finally:
         service.close()
 
-    print(f"ok={response.get('ok')} cache_hit={response['cache']['hit']} total_found={response['total_found']}")
+    print(
+        f"ok={response.get('ok')} cache_hit={response['cache']['hit']} "
+        f"total_found={response['total_found']} returned={response['returned']}"
+    )
+    print(
+        "policy="
+        f"{response.get('policy', {})} more_available={response.get('more_available', 0)}"
+    )
     print("\nFontes:")
     for source, status in response.get("sources", {}).items():
         print(
@@ -77,10 +91,15 @@ def main() -> int:
         print(f"\n{index}. {paper.get('title')}")
         print(f"   autores: {authors or 'não informado'}")
         print(f"   ano/venue: {paper.get('year') or 'n/i'} / {paper.get('venue') or 'n/i'}")
+        print(
+            f"   tipo/instituição: {paper.get('document_type') or 'n/i'} / "
+            f"{paper.get('institution') or 'n/i'}"
+        )
         print(f"   doi: {paper.get('doi') or 'não informado'}")
-        print(f"   url: {paper.get('open_access_url') or paper.get('url') or 'não informado'}")
+        print(f"   PDF gratuito verificado: {paper.get('full_text_url') or 'não informado'}")
+        print(f"   acesso: {paper.get('access_status') or 'não informado'}")
         print(f"   score: {paper.get('ranking_score')}")
-    return 0 if response.get("ok") or response.get("results") else 1
+    return 0 if response.get("results") else 1
 
 
 if __name__ == "__main__":

@@ -29,8 +29,11 @@ def register(ctx) -> None:
     ctx.register_skill(
         name="baja-research",
         path=skill_path,
-        description="Use BAJA Research to find and cite real academic papers.",
-        frontmatter={"name": "baja-research", "description": "Use BAJA Research to find and cite real academic papers."},
+        description="Find and cite verified free academic work for Baja SAE.",
+        frontmatter={
+            "name": "baja-research",
+            "description": "Find and cite verified free academic work for Baja SAE.",
+        },
     )
     ctx.on_unload(service.close)
 

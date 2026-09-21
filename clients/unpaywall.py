@@ -24,7 +24,7 @@ class UnpaywallClient:
         self,
         *,
         email: str | None = None,
-        timeout: float = 15.0,
+        timeout: float = 8.0,
         max_retries: int = 1,
         http: JsonHttpClient | None = None,
     ) -> None:

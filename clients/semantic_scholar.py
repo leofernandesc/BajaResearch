@@ -81,8 +81,8 @@ class SemanticScholarClient:
         self,
         *,
         api_key: str | None = None,
-        timeout: float = 15.0,
-        max_retries: int = 2,
+        timeout: float = 8.0,
+        max_retries: int = 1,
         http: JsonHttpClient | None = None,
         recommendations_http: JsonHttpClient | None = None,
     ) -> None:

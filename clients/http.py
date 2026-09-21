@@ -14,7 +14,7 @@ from .base import SourceError
 
 logger = logging.getLogger(__name__)
 
-USER_AGENT = "BAJA-Research/0.1.0 (https://github.com/leofernandesc/BajaResearch)"
+USER_AGENT = "BAJA-Research/0.2.0 (https://github.com/leofernandesc/BajaResearch)"
 
 
 def _retry_after(headers: Mapping[str, Any]) -> float | None:
@@ -43,8 +43,8 @@ class JsonHttpClient:
         base_url: str,
         source: str,
         *,
-        timeout: float = 15.0,
-        max_retries: int = 2,
+        timeout: float = 8.0,
+        max_retries: int = 1,
         headers: Mapping[str, str] | None = None,
         http_client: httpx.Client | None = None,
         sleep_fn=time.sleep,

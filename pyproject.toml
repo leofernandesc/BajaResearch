@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "baja-research"
-version = "0.1.0"
-description = "Standalone Hermes Agent plugin for multi-source academic research."
+version = "0.2.0"
+description = "Hermes plugin for verified free academic research in Baja SAE."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

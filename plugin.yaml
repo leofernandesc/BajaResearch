@@ -1,6 +1,6 @@
 name: baja-research
-version: 0.1.0
-description: "Academic literature search for Baja SAE engineering and project-management work."
+version: 0.2.0
+description: "Verified free academic literature for Baja SAE engineering and project-management work."
 author: "Leonardo Fernandes Cavalcante"
 kind: standalone
 api_version: 1
@@ -27,5 +27,5 @@ config_schema:
     description: "TTL for identical academic searches. Environment variable takes precedence."
   request_timeout_seconds:
     type: number
-    default: 15
+    default: 8
     description: "HTTP timeout per academic source request."

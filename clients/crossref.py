@@ -1,4 +1,4 @@
-"""Crossref REST client used for DOI resolution and bibliographic fallback."""
+"""Crossref REST client used for DOI resolution and metadata enrichment."""
 
 from __future__ import annotations
 
@@ -92,8 +92,8 @@ class CrossrefClient:
         self,
         *,
         mailto: str | None = None,
-        timeout: float = 15.0,
-        max_retries: int = 2,
+        timeout: float = 8.0,
+        max_retries: int = 1,
         http: JsonHttpClient | None = None,
     ) -> None:
         self.mailto = mailto or os.getenv("CROSSREF_MAILTO") or None

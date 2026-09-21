@@ -280,6 +280,38 @@ def test_unreachable_open_access_link_is_not_recommended(tmp_path):
     assert result["filters_applied"]["unverified_open_access"] > 0
 
 
+def test_temporary_pdf_failure_keeps_structured_access_status(tmp_path):
+    class TemporaryPdfVerifier:
+        def check_many(self, urls):
+            return {
+                url: AccessCheck(
+                    "temporary_error",
+                    url,
+                    final_url=url,
+                    http_status=429,
+                    reason="temporarily_unavailable",
+                )
+                for url in urls
+            }
+
+        def close(self):
+            pass
+
+    paper = Paper(
+        "",
+        "Projeto de suspensão para Baja SAE",
+        open_access_url="https://repository.example/rate-limited.pdf",
+    )
+    service = ResearchService(
+        storage=ResearchStorage(tmp_path / "cache.sqlite3"),
+        clients={},
+        link_validator=TemporaryPdfVerifier(),
+    )
+    service._validate_papers([paper])
+    assert paper.access_status == "temporary_error"
+    assert paper.full_text_url is None
+
+
 def test_long_form_verified_work_is_listed_before_article(tmp_path):
     thesis = Paper(
         "",

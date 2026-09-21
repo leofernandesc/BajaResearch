@@ -11,10 +11,10 @@ from typing import Any
 class ResearchConfig:
     cache_ttl_hours: float = 24.0
     source_cache_ttl_hours: float = 24.0
-    request_timeout_seconds: float = 15.0
+    request_timeout_seconds: float = 8.0
     global_timeout_seconds: float = 25.0
     circuit_breaker_seconds: float = 60.0
-    max_retries: int = 2
+    max_retries: int = 1
     openalex_api_key: str | None = None
     semantic_scholar_api_key: str | None = None
     crossref_mailto: str | None = None
@@ -50,7 +50,7 @@ def _context_setting(ctx: Any, name: str, default: Any) -> Any:
 def config_from_context(ctx: Any) -> ResearchConfig:
     """Combine public Hermes plugin settings with environment credentials."""
     context_ttl = _context_setting(ctx, "cache_ttl_hours", 24)
-    context_timeout = _context_setting(ctx, "request_timeout_seconds", 15)
+    context_timeout = _context_setting(ctx, "request_timeout_seconds", 8)
     try:
         context_ttl = float(context_ttl)
     except (TypeError, ValueError):
@@ -58,7 +58,7 @@ def config_from_context(ctx: Any) -> ResearchConfig:
     try:
         context_timeout = float(context_timeout)
     except (TypeError, ValueError):
-        context_timeout = 15.0
+        context_timeout = 8.0
     return ResearchConfig(
         cache_ttl_hours=_env_float("BAJA_RESEARCH_CACHE_TTL_HOURS", context_ttl),
         source_cache_ttl_hours=_env_float(
@@ -73,7 +73,7 @@ def config_from_context(ctx: Any) -> ResearchConfig:
         circuit_breaker_seconds=_env_float(
             "BAJA_RESEARCH_CIRCUIT_BREAKER_SECONDS", 60.0
         ),
-        max_retries=_env_int("BAJA_RESEARCH_MAX_RETRIES", 2),
+        max_retries=_env_int("BAJA_RESEARCH_MAX_RETRIES", 1),
         openalex_api_key=os.getenv("OPENALEX_API_KEY") or None,
         semantic_scholar_api_key=os.getenv("SEMANTIC_SCHOLAR_API_KEY") or None,
         crossref_mailto=os.getenv("CROSSREF_MAILTO") or None,

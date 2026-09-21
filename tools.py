@@ -370,9 +370,18 @@ class ResearchService:
         return usable[:limit], rejected
 
     def _source_info(self, source: str, client: Any) -> dict[str, Any]:
+        roles = {
+            "oasisbr": "primary_long_form_discovery",
+            "bdtd": "long_form_fallback",
+            "openalex": "global_discovery",
+            "semantic_scholar": "global_fallback_and_enrichment",
+            "crossref": "doi_metadata_enrichment_only",
+        }
         return {
-            "configured": bool(getattr(client, "configured", False)),
-            "key_optional": source in {"openalex", "oasisbr", "bdtd"},
+            "configured": True,
+            "credential_configured": bool(getattr(client, "configured", False)),
+            "credential_optional": True,
+            "role": roles.get(source, "academic_source"),
         }
 
     def _parallel(self, operations: list[tuple[str, str | None, Callable[[], list[Paper]]]]) -> list[SourceResult]:

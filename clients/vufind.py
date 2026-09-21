@@ -101,8 +101,8 @@ class VuFindClient:
         base_url: str,
         source: str,
         *,
-        timeout: float = 15.0,
-        max_retries: int = 2,
+        timeout: float = 8.0,
+        max_retries: int = 1,
         http: JsonHttpClient | None = None,
     ) -> None:
         self.source = source

@@ -71,7 +71,7 @@ GET_PAPER_SCHEMA = {
 
 RELATED_SCHEMA = {
     "name": "find_related_papers",
-    "description": "Find related real papers using Semantic Scholar recommendations, OpenAlex related works, and metadata search fallback.",
+    "description": "Find related Baja/Formula/off-road work and return only anonymously verified free full-text PDFs.",
     "parameters": {
         "type": "object",
         "properties": {
