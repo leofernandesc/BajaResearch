@@ -21,7 +21,48 @@ _DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$", re.IGNORECASE)
 _DOI_PREFIX_RE = re.compile(
     r"^(?:https?://)?(?:dx\.)?doi\.org/|^doi:\s*", re.IGNORECASE
 )
-_SOURCE_PRIORITY = {"openalex": 3, "semantic_scholar": 2, "crossref": 1}
+_SOURCE_PRIORITY = {
+    "oasisbr": 6,
+    "bdtd": 6,
+    "openalex": 4,
+    "semantic_scholar": 3,
+    "crossref": 2,
+    "unpaywall": 1,
+}
+
+_DOCUMENT_TYPE_ALIASES = {
+    "bachelorthesis": "bachelor_thesis",
+    "bachelor thesis": "bachelor_thesis",
+    "undergraduate thesis": "bachelor_thesis",
+    "trabalho de conclusao de curso": "bachelor_thesis",
+    "trabalho de conclusao": "bachelor_thesis",
+    "masterthesis": "master_thesis",
+    "master thesis": "master_thesis",
+    "masters thesis": "master_thesis",
+    "dissertacao": "master_thesis",
+    "dissertation": "master_thesis",
+    "doctoralthesis": "doctoral_thesis",
+    "doctoral thesis": "doctoral_thesis",
+    "phd thesis": "doctoral_thesis",
+    "tese": "doctoral_thesis",
+    "monograph": "monograph",
+    "monografia": "monograph",
+    "thesis": "thesis",
+    "journal article": "journal_article",
+    "journal-article": "journal_article",
+    "article": "journal_article",
+    "proceedings article": "conference_paper",
+    "proceedings-article": "conference_paper",
+    "conference paper": "conference_paper",
+    "conference-paper": "conference_paper",
+    "report": "report",
+    "book chapter": "book_chapter",
+    "book-chapter": "book_chapter",
+}
+
+LONG_FORM_DOCUMENT_TYPES = frozenset(
+    {"bachelor_thesis", "master_thesis", "doctoral_thesis", "thesis", "monograph"}
+)
 
 
 def normalize_doi(value: Any) -> str | None:
@@ -54,6 +95,40 @@ def normalize_title(value: Any) -> str:
     text = text.casefold()
     text = re.sub(r"[^a-z0-9]+", " ", text)
     return " ".join(text.split())
+
+
+def normalize_document_type(value: Any) -> str | None:
+    """Map source-specific document types to a small auditable vocabulary."""
+    raw = _clean_text(value)
+    if not raw:
+        return None
+    normalized = normalize_title(raw)
+    compact = normalized.replace(" ", "")
+    if normalized in _DOCUMENT_TYPE_ALIASES:
+        return _DOCUMENT_TYPE_ALIASES[normalized]
+    if compact in _DOCUMENT_TYPE_ALIASES:
+        return _DOCUMENT_TYPE_ALIASES[compact]
+    if "bachelor" in normalized and "thesis" in normalized:
+        return "bachelor_thesis"
+    if ("master" in normalized or "dissert" in normalized) and (
+        "thesis" in normalized or "dissert" in normalized
+    ):
+        return "master_thesis"
+    if any(token in normalized for token in ("doctoral", "doctorate", "phd")):
+        return "doctoral_thesis"
+    if "thesis" in normalized:
+        return "thesis"
+    if "monograph" in normalized or "monografia" in normalized:
+        return "monograph"
+    if "conference" in normalized or "proceeding" in normalized:
+        return "conference_paper"
+    if "article" in normalized:
+        return "journal_article"
+    return normalized.replace(" ", "_")[:80]
+
+
+def is_long_form_document(value: Any) -> bool:
+    return normalize_document_type(value) in LONG_FORM_DOCUMENT_TYPES
 
 
 def _clean_text(value: Any) -> str | None:
@@ -110,15 +185,26 @@ class Paper:
     doi: str | None = None
     openalex_id: str | None = None
     semantic_scholar_id: str | None = None
+    oasisbr_id: str | None = None
+    bdtd_id: str | None = None
     citation_count: int | None = None
+    institution: str | None = None
+    language: str | None = None
     url: str | None = None
     open_access_url: str | None = None
+    landing_url: str | None = None
+    full_text_url: str | None = None
+    access_status: str = "unknown"
+    access_evidence: dict[str, Any] = field(default_factory=dict)
+    access_verified_at: str | None = None
     topics: list[str] = field(default_factory=list)
     sources: list[str] = field(default_factory=list)
     source_scores: dict[str, float] = field(default_factory=dict)
     ranking_score: float | None = None
     score_details: dict[str, float] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
+    provenance: dict[str, Any] = field(default_factory=dict)
+    ranking_version: str | None = None
     verified_url: str | None = None
     verified_open_access_url: str | None = None
     link_status: dict[str, str] = field(default_factory=dict)
@@ -129,9 +215,18 @@ class Paper:
         self.year = _clean_year(self.year)
         self.abstract = _clean_text(self.abstract)
         self.venue = _clean_text(self.venue)
-        self.document_type = _clean_text(self.document_type)
+        self.document_type = normalize_document_type(self.document_type)
+        self.oasisbr_id = _clean_text(self.oasisbr_id)
+        self.bdtd_id = _clean_text(self.bdtd_id)
+        self.institution = _clean_text(self.institution)
+        self.language = _clean_text(self.language)
         self.url = _clean_text(self.url)
         self.open_access_url = _clean_text(self.open_access_url)
+        self.landing_url = _clean_text(self.landing_url) or self.url
+        self.full_text_url = _clean_text(self.full_text_url)
+        self.access_status = _clean_text(self.access_status) or "unknown"
+        self.access_evidence = dict(self.access_evidence or {})
+        self.access_verified_at = _clean_text(self.access_verified_at)
         self.verified_url = _clean_text(self.verified_url)
         self.verified_open_access_url = _clean_text(self.verified_open_access_url)
         self.authors = _unique_strings(self.authors)
@@ -148,6 +243,8 @@ class Paper:
             except (TypeError, ValueError):
                 self.citation_count = None
         self.metadata = dict(self.metadata or {})
+        self.provenance = dict(self.provenance or {})
+        self.ranking_version = _clean_text(self.ranking_version)
         self.link_status = {
             str(key): str(value)
             for key, value in (self.link_status or {}).items()
@@ -168,30 +265,52 @@ class Paper:
             doi=value.get("doi"),
             openalex_id=value.get("openalex_id"),
             semantic_scholar_id=value.get("semantic_scholar_id"),
+            oasisbr_id=value.get("oasisbr_id"),
+            bdtd_id=value.get("bdtd_id"),
             citation_count=value.get("citation_count"),
+            institution=value.get("institution"),
+            language=value.get("language"),
             url=value.get("url"),
             open_access_url=value.get("open_access_url"),
+            landing_url=value.get("landing_url"),
+            full_text_url=value.get("full_text_url"),
+            access_status=value.get("access_status") or "unknown",
+            access_evidence=dict(value.get("access_evidence") or {}),
+            access_verified_at=value.get("access_verified_at"),
             topics=list(value.get("topics") or []),
             sources=list(value.get("sources") or []),
             source_scores=dict(value.get("source_scores") or {}),
             ranking_score=value.get("ranking_score"),
             score_details=dict(value.get("score_details") or {}),
             metadata=dict(value.get("metadata") or {}),
+            provenance=dict(value.get("provenance") or {}),
+            ranking_version=value.get("ranking_version"),
             verified_url=value.get("verified_url"),
             verified_open_access_url=value.get("verified_open_access_url"),
             link_status=dict(value.get("link_status") or value.get("link_verification") or {}),
         )
 
-    def _public_url(self, field: str, raw: str | None, verified: str | None) -> str | None:
-        status = self.link_status.get(field)
-        if status == "valid":
-            return verified or raw
-        if status in {"invalid", "unknown"}:
-            return None
-        return raw
+    def public_full_text_url(self) -> str | None:
+        """Return a URL only when anonymous PDF access was actually verified."""
+        if self.access_status == "verified_pdf" and self.full_text_url:
+            return self.full_text_url
+        # Read compatibility for records verified by the v0.1 validator. New
+        # searches always use ``access_status=verified_pdf``.
+        if self.link_status.get("open_access_url") == "valid":
+            return self.verified_open_access_url or self.open_access_url
+        return None
+
+    def candidate_full_text_urls(self) -> list[str]:
+        values = [
+            self.full_text_url,
+            self.open_access_url,
+            *list(self.metadata.get("full_text_candidates") or []),
+        ]
+        return list(dict.fromkeys(str(value).strip() for value in values if value))
 
     def to_dict(self, *, compact: bool = True) -> dict[str, Any]:
         """Serialize only normalized fields; never expose raw API payloads."""
+        full_text_url = self.public_full_text_url()
         result: dict[str, Any] = {
             "internal_id": self.internal_id,
             "title": self.title,
@@ -203,11 +322,16 @@ class Paper:
             "doi": self.doi,
             "openalex_id": self.openalex_id,
             "semantic_scholar_id": self.semantic_scholar_id,
+            "oasisbr_id": self.oasisbr_id,
+            "bdtd_id": self.bdtd_id,
             "citation_count": self.citation_count,
-            "url": self._public_url("url", self.url, self.verified_url),
-            "open_access_url": self._public_url(
-                "open_access_url", self.open_access_url, self.verified_open_access_url
-            ),
+            "institution": self.institution,
+            "language": self.language,
+            "url": full_text_url,
+            "open_access_url": full_text_url,
+            "full_text_url": full_text_url,
+            "access_status": self.access_status,
+            "access_verified_at": self.access_verified_at,
             "topics": self.topics[:20],
             "sources": self.sources,
             "source_scores": self.source_scores,
@@ -218,6 +342,8 @@ class Paper:
                 result["abstract_snippet"] = self.abstract[:700]
         if self.link_status:
             result["link_verification"] = dict(self.link_status)
+        if self.access_evidence:
+            result["access_evidence"] = dict(self.access_evidence)
         if self.ranking_score is not None:
             result["ranking_score"] = round(float(self.ranking_score), 6)
         if self.score_details:
@@ -228,6 +354,12 @@ class Paper:
             }
         if self.metadata and not compact:
             result["metadata"] = self.metadata
+        if not compact:
+            result["landing_url"] = self.landing_url
+            result["candidate_full_text_urls"] = self.candidate_full_text_urls()
+            result["provenance"] = self.provenance
+        if self.ranking_version:
+            result["ranking_version"] = self.ranking_version
         return result
 
     def to_storage_dict(self) -> dict[str, Any]:
@@ -247,6 +379,10 @@ def make_internal_id(paper: Paper) -> str:
         return f"openalex:{paper.openalex_id}"
     if paper.semantic_scholar_id:
         return f"s2:{paper.semantic_scholar_id}"
+    if paper.oasisbr_id:
+        return f"oasisbr:{paper.oasisbr_id}"
+    if paper.bdtd_id:
+        return f"bdtd:{paper.bdtd_id}"
     identity = f"{normalize_title(paper.title)}|{paper.year or ''}"
     digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
     return f"paper:{digest}"
@@ -260,6 +396,10 @@ def _identity_ids(paper: Paper) -> set[str]:
         keys.add(f"openalex:{paper.openalex_id}")
     if paper.semantic_scholar_id:
         keys.add(f"s2:{paper.semantic_scholar_id}")
+    if paper.oasisbr_id:
+        keys.add(f"oasisbr:{paper.oasisbr_id}")
+    if paper.bdtd_id:
+        keys.add(f"bdtd:{paper.bdtd_id}")
     return keys
 
 
@@ -299,6 +439,13 @@ def merge_papers(left: Paper, right: Paper) -> Paper:
     source_scores.update(right.source_scores)
     metadata = dict(left.metadata)
     metadata.update(right.metadata)
+    provenance = dict(left.provenance)
+    provenance.update(right.provenance)
+    access_evidence = dict(left.access_evidence)
+    access_evidence.update(right.access_evidence)
+    verified_access = right if right.access_status == "verified_pdf" else left
+    if left.access_status != "verified_pdf" and right.access_status != "verified_pdf":
+        verified_access = right if prefer_right else left
     merged = Paper(
         internal_id=left.internal_id or right.internal_id,
         title=choose_text(left.title, right.title) or "Untitled paper",
@@ -310,18 +457,29 @@ def merge_papers(left: Paper, right: Paper) -> Paper:
         doi=left.doi or right.doi,
         openalex_id=left.openalex_id or right.openalex_id,
         semantic_scholar_id=left.semantic_scholar_id or right.semantic_scholar_id,
+        oasisbr_id=left.oasisbr_id or right.oasisbr_id,
+        bdtd_id=left.bdtd_id or right.bdtd_id,
         citation_count=max(
             [count for count in (left.citation_count, right.citation_count) if count is not None],
             default=None,
         ),
+        institution=choose_text(left.institution, right.institution),
+        language=choose_text(left.language, right.language),
         url=choose_text(left.url, right.url),
         open_access_url=left.open_access_url or right.open_access_url,
+        landing_url=choose_text(left.landing_url, right.landing_url),
+        full_text_url=verified_access.full_text_url,
+        access_status=verified_access.access_status,
+        access_evidence=access_evidence,
+        access_verified_at=verified_access.access_verified_at,
         topics=_unique_strings([*left.topics, *right.topics]),
         sources=_unique_strings([*left.sources, *right.sources]),
         source_scores=source_scores,
         ranking_score=right.ranking_score if right.ranking_score is not None else left.ranking_score,
         score_details=dict(right.score_details or left.score_details),
         metadata=metadata,
+        provenance=provenance,
+        ranking_version=right.ranking_version or left.ranking_version,
         verified_url=left.verified_url or right.verified_url,
         verified_open_access_url=left.verified_open_access_url or right.verified_open_access_url,
         link_status={**left.link_status, **right.link_status},
@@ -419,14 +577,25 @@ def paper_from_storage(row: Mapping[str, Any]) -> Paper:
         doi=value("doi"),
         openalex_id=value("openalex_id"),
         semantic_scholar_id=value("semantic_scholar_id"),
+        oasisbr_id=value("oasisbr_id"),
+        bdtd_id=value("bdtd_id"),
         authors=loads("authors_json", []),
         citation_count=value("citation_count"),
+        institution=value("institution"),
+        language=value("language"),
         url=value("url"),
         open_access_url=value("open_access_url"),
+        landing_url=value("landing_url"),
+        full_text_url=value("full_text_url"),
+        access_status=value("access_status", "unknown"),
+        access_evidence=loads("access_evidence_json", {}),
+        access_verified_at=value("access_verified_at"),
         topics=loads("topics_json", []),
         sources=loads("sources_json", []),
         source_scores=loads("source_scores_json", {}),
         metadata=loads("metadata_json", {}),
+        provenance=loads("provenance_json", {}),
+        ranking_version=value("ranking_version"),
         ranking_score=value("ranking_score"),
         score_details=loads("score_details_json", {}),
         verified_url=value("verified_url"),
@@ -440,7 +609,9 @@ __all__ = [
     "deduplicate_papers",
     "make_internal_id",
     "merge_papers",
+    "is_long_form_document",
     "normalize_doi",
+    "normalize_document_type",
     "normalize_title",
     "paper_from_storage",
 ]

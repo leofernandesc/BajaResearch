@@ -1,4 +1,10 @@
-from models import Paper, normalize_doi, normalize_title
+from models import (
+    Paper,
+    is_long_form_document,
+    normalize_document_type,
+    normalize_doi,
+    normalize_title,
+)
 
 
 def test_normalize_doi_accepts_common_forms():
@@ -46,3 +52,30 @@ def test_invalid_public_link_is_not_exposed():
     )
     assert paper.to_dict(compact=True)["url"] is None
     assert paper.to_dict(compact=True)["link_verification"]["url"] == "invalid"
+
+
+def test_document_type_normalization_does_not_infer_tcc_from_title() -> None:
+    assert normalize_document_type("bachelorThesis") == "bachelor_thesis"
+    assert normalize_document_type("Dissertação") == "master_thesis"
+    assert is_long_form_document("doctoral thesis") is True
+    paper = Paper("", "A escrita do TCC e a formação universitária", document_type="article")
+    assert paper.document_type == "journal_article"
+    assert is_long_form_document(paper.document_type) is False
+
+
+def test_only_verified_pdf_is_exposed_as_full_text() -> None:
+    candidate = Paper(
+        "paper:candidate",
+        "Candidate only",
+        open_access_url="https://publisher.example/article",
+    )
+    assert candidate.to_dict()["full_text_url"] is None
+
+    verified = Paper(
+        "paper:verified",
+        "Verified PDF",
+        full_text_url="https://repository.example/document.pdf",
+        access_status="verified_pdf",
+        access_evidence={"method": "streamed_get_pdf_magic"},
+    )
+    assert verified.to_dict()["full_text_url"].endswith("document.pdf")
