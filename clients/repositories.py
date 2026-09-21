@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any, Mapping
 from urllib.parse import quote, urlparse
+import xml.etree.ElementTree as ET
 
 import httpx
 
@@ -77,6 +78,134 @@ class RepositoryResolver:
             return response.json()
         except ValueError:
             return None
+
+    def _xml(self, url: str, *, params: Mapping[str, str]) -> ET.Element | None:
+        try:
+            response = self._client.get(
+                url,
+                params=dict(params),
+                headers={"User-Agent": USER_AGENT, "Accept": "application/xml,text/xml"},
+                follow_redirects=False,
+                timeout=self.timeout,
+            )
+        except httpx.RequestError:
+            return None
+        if response.status_code != 200:
+            return None
+        try:
+            return ET.fromstring(response.content)
+        except ET.ParseError:
+            return None
+
+    @staticmethod
+    def _local_name(tag: str) -> str:
+        return str(tag).rsplit("}", 1)[-1].casefold()
+
+    def _enrich_oai(self, paper: Paper, landing: str, handle: str) -> list[str]:
+        """Resolve DSpace 8/9 handles through public OAI-PMH metadata.
+
+        Some current DSpace installations protect ``/server/api`` while still
+        exposing OAI-PMH. METS/ORE exposes the original anonymous bitstream
+        without requiring an application session or API token.
+        """
+        origin = self._origin(landing)
+        endpoint = f"{origin}/server/oai/request"
+        identifier = str(paper.metadata.get("oai_identifier") or "").strip()
+        if not identifier:
+            identifier = f"oai:{urlparse(landing).netloc}:{handle}"
+
+        dc_root = self._xml(
+            endpoint,
+            params={
+                "verb": "GetRecord",
+                "metadataPrefix": "oai_dc",
+                "identifier": identifier,
+            },
+        )
+        if dc_root is not None:
+            descriptions: list[str] = []
+            subjects: list[str] = []
+            creators: list[str] = []
+            publishers: list[str] = []
+            for element in dc_root.iter():
+                name = self._local_name(element.tag)
+                value = " ".join(str(element.text or "").split())
+                if not value:
+                    continue
+                if name == "description":
+                    descriptions.append(value)
+                elif name == "subject":
+                    subjects.append(value)
+                elif name == "creator":
+                    creators.append(value)
+                elif name == "publisher":
+                    publishers.append(value)
+                elif name == "language" and not paper.language:
+                    paper.language = value
+                elif name == "date" and paper.year is None:
+                    match = re.search(r"\b(19|20)\d{2}\b", value)
+                    if match:
+                        paper.year = int(match.group(0))
+                elif name == "type" and paper.document_type is None:
+                    paper.document_type = normalize_document_type(value)
+            if not paper.abstract and descriptions:
+                paper.abstract = max(descriptions, key=len)
+            if not paper.topics:
+                paper.topics = list(dict.fromkeys(subjects))
+            if not paper.authors:
+                paper.authors = list(dict.fromkeys(creators))
+            if not paper.institution and publishers:
+                paper.institution = publishers[0]
+
+        for metadata_prefix in ("mets", "ore"):
+            root = self._xml(
+                endpoint,
+                params={
+                    "verb": "GetRecord",
+                    "metadataPrefix": metadata_prefix,
+                    "identifier": identifier,
+                },
+            )
+            if root is None:
+                continue
+            candidates: list[str] = []
+            for element in root.iter():
+                name = self._local_name(element.tag)
+                if name == "file":
+                    mime = str(element.attrib.get("MIMETYPE") or "").casefold()
+                    filename = str(element.attrib.get("NAME") or "").casefold()
+                    for child in element.iter():
+                        if self._local_name(child.tag) != "flocat":
+                            continue
+                        href = next(
+                            (
+                                value
+                                for key, value in child.attrib.items()
+                                if key.rsplit("}", 1)[-1].casefold() in {"href", "url"}
+                                and value
+                            ),
+                            None,
+                        )
+                        if href and ("pdf" in mime or filename.endswith(".pdf")):
+                            candidates.append(str(href))
+                elif name == "link":
+                    href = next(
+                        (
+                            value
+                            for key, value in element.attrib.items()
+                            if key.rsplit("}", 1)[-1].casefold() in {"href", "url"}
+                            and value
+                        ),
+                        None,
+                    )
+                    link_type = str(element.attrib.get("type") or "").casefold()
+                    if href and "pdf" in link_type:
+                        candidates.append(str(href))
+            if candidates:
+                paper.provenance.setdefault("repository", {})["dspace_version"] = 9
+                paper.provenance["repository"]["metadata_protocol"] = metadata_prefix
+                return list(dict.fromkeys(candidates))
+        return []
 
     @staticmethod
     def _origin(url: str) -> str:
@@ -214,6 +343,8 @@ class RepositoryResolver:
                 if handle
                 else []
             )
+            if not candidates and handle:
+                candidates = self._enrich_oai(paper, final_landing, handle.group(1))
         existing = list(paper.metadata.get("full_text_candidates") or [])
         paper.metadata["full_text_candidates"] = list(
             dict.fromkeys([*existing, *candidates])

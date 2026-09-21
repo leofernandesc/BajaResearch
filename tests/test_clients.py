@@ -282,6 +282,73 @@ def test_dspace7_repository_resolution_enriches_and_finds_original_pdf():
     assert paper.abstract == "Suspension abstract"
 
 
+def test_dspace9_oai_resolution_finds_original_pdf_when_server_api_is_private():
+    landing = "https://repository.example/handle/20.500.14289/13903"
+    pdf = "https://repository.example/bitstreams/pdf-1/download"
+
+    class LandingVerifier:
+        def check(self, url):
+            return AccessCheck(
+                "invalid",
+                url,
+                final_url=landing,
+                http_status=200,
+                content_type="text/html",
+                reason="response_is_not_pdf",
+            )
+
+    def handler(request):
+        if request.url.path.endswith("/rest/handle/20.500.14289/13903"):
+            return httpx.Response(404, request=request)
+        assert request.url.path == "/server/oai/request"
+        prefix = request.url.params["metadataPrefix"]
+        if prefix == "oai_dc":
+            payload = """<?xml version="1.0"?>
+                <OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/"
+                  xmlns:dc="http://purl.org/dc/elements/1.1/">
+                  <GetRecord><record><metadata><dc:dc>
+                    <dc:creator>Author, A.</dc:creator>
+                    <dc:description>A long Baja telemetry abstract.</dc:description>
+                    <dc:date>2020-12-17</dc:date>
+                    <dc:publisher>Example University</dc:publisher>
+                    <dc:subject>Baja SAE</dc:subject>
+                    <dc:type>TCC</dc:type>
+                  </dc:dc></metadata></record></GetRecord>
+                </OAI-PMH>"""
+            return httpx.Response(200, content=payload.encode(), request=request)
+        if prefix == "mets":
+            payload = f"""<?xml version="1.0"?>
+                <mets:mets xmlns:mets="http://www.loc.gov/METS/"
+                  xmlns:xlink="http://www.w3.org/1999/xlink">
+                  <mets:fileSec><mets:fileGrp USE="ORIGINAL">
+                    <mets:file MIMETYPE="application/pdf">
+                      <mets:FLocat xlink:href="{pdf}" />
+                    </mets:file>
+                  </mets:fileGrp></mets:fileSec>
+                </mets:mets>"""
+            return httpx.Response(200, content=payload.encode(), request=request)
+        return httpx.Response(404, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    resolver = RepositoryResolver(LandingVerifier(), http_client=client)
+    paper = Paper(
+        "",
+        "Projeto de telemetria Baja SAE",
+        landing_url=landing,
+        metadata={"oai_identifier": "oai:repository.example:20.500.14289/13903"},
+    )
+    try:
+        candidates = resolver.resolve(paper)
+    finally:
+        resolver.close()
+        client.close()
+    assert candidates == [pdf]
+    assert paper.year == 2020
+    assert paper.document_type == "bachelor_thesis"
+    assert paper.institution == "Example University"
+    assert paper.provenance["repository"]["dspace_version"] == 9
+
+
 def test_unpaywall_returns_candidates_but_does_not_mark_them_verified():
     def handler(request):
         assert request.url.params["email"] == "researcher@example.com"

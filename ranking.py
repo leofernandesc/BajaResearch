@@ -38,20 +38,36 @@ _GENERIC_TECHNICAL_TOKENS = {
 }
 _TECHNICAL_ALIASES = {
     "electronics": {
-        "electronic", "telemetry", "sensor", "sensors", "embedded", "can",
-        "acquisition", "instrumentation", "microcontroller",
+        "electronic", "eletronica", "eletronico", "telemetry", "sensor",
+        "sensors", "embedded", "can", "acquisition", "instrumentation",
+        "microcontroller",
     },
     "eletronica": {
-        "eletronico", "telemetria", "sensor", "sensores", "embarcado", "can",
+        "electronic", "electronics", "eletronico", "telemetria", "sensor",
+        "sensores", "embarcado", "can",
         "aquisicao", "instrumentacao", "microcontrolador",
     },
+    "telemetry": {
+        "telematics", "telemetria", "telemetrias", "data", "dados",
+        "acquisition", "aquisicao", "sensor", "sensors", "sensores",
+    },
+    "data": {"dados"},
+    "acquisition": {"aquisicao", "aquisicoes"},
+    "sensor": {"sensores"},
+    "sensors": {"sensor", "sensores"},
+    "embedded": {"embarcado", "embarcada", "embarcados"},
+    "can": {"can"},
     "suspension": {"suspensao", "damper", "damping", "shock", "wishbone", "camber", "toe"},
     "suspensao": {"suspension", "amortecedor", "amortecimento", "bandeja", "cambagem", "convergencia"},
-    "chassis": {"chassi", "frame", "spaceframe", "rollcage", "structure", "structural"},
+    "chassis": {"chassi", "frame", "spaceframe", "rollcage", "structure", "structural", "estrutural"},
     "chassi": {"chassis", "estrutura", "estrutural", "gaiola"},
+    "geometry": {"geometria", "geometric"},
+    "finite": {"finito", "finitos"},
+    "element": {"elemento", "elementos"},
+    "structural": {"estrutura", "estrutural"},
+    "transmission": {"transmissao"},
     "brake": {"brakes", "braking", "caliper", "disc"},
     "freio": {"freios", "frenagem", "pinça", "disco"},
-    "telemetry": {"telematics", "data", "acquisition", "sensor", "sensors"},
     "telemetria": {"dados", "aquisicao", "sensor", "sensores"},
 }
 _STRONG_CONTEXT_TERMS = {

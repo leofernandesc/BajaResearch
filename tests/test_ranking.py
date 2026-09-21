@@ -159,3 +159,20 @@ def test_hard_gate_rejects_matching_technical_paper_without_vehicle_context():
     )
     assert kept == []
     assert rejected["missing_baja_context"] == 1
+
+
+def test_english_focus_matches_portuguese_repository_terminology():
+    paper = Paper(
+        "",
+        "Projeto de um sistema embarcado de aquisição de dados com implementação e testes de sistema de telemetria",
+        document_type="TCC",
+        topics=["Baja SAE"],
+    )
+    kept, rejected = filter_relevant_papers(
+        [paper],
+        "telemetry data acquisition sensors CAN",
+        ["Baja SAE telemetry data acquisition"],
+        require_context=True,
+    )
+    assert kept == [paper]
+    assert rejected == {"wrong_technical_focus": 0, "missing_baja_context": 0}

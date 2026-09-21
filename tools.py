@@ -630,7 +630,6 @@ class ResearchService:
             paper
             for paper in unique
             if set(paper.sources) & {"oasisbr", "bdtd"}
-            and application_context_signal(paper) >= 0.70
             and (
                 technical_relevance_signal(paper, focus, effective_queries) >= 0.30
                 or "bdtd" in paper.sources

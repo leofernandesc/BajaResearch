@@ -312,6 +312,47 @@ def test_temporary_pdf_failure_keeps_structured_access_status(tmp_path):
     assert paper.full_text_url is None
 
 
+def test_repository_metadata_is_resolved_before_context_gate(tmp_path):
+    candidate = Paper(
+        "",
+        "Projeto de um sistema embarcado de aquisição de dados e telemetria",
+        document_type="TCC",
+        landing_url="https://repository.example/handle/123",
+        sources=["oasisbr"],
+    )
+    client = FakeClient()
+    client.papers = [candidate]
+
+    class RepositoryMetadata:
+        def resolve(self, paper):
+            paper.abstract = "Aquisição de dados e telemetria para um veículo Baja SAE."
+            paper.topics = ["Baja SAE", "Telemetria"]
+            paper.institution = "Example University"
+            paper.metadata["full_text_candidates"] = [
+                "https://repository.example/bitstreams/paper.pdf"
+            ]
+            return list(paper.metadata["full_text_candidates"])
+
+        def close(self):
+            pass
+
+    service = ResearchService(
+        config=ResearchConfig(cache_ttl_hours=0),
+        storage=ResearchStorage(tmp_path / "cache.sqlite3"),
+        clients={"oasisbr": client},
+        link_validator=AcceptAllPdfVerifier(),
+        repository_resolver=RepositoryMetadata(),
+    )
+    result = service.search(
+        queries=["Baja SAE telemetry data acquisition"],
+        technical_focus="telemetry data acquisition",
+        limit=1,
+    )
+    assert result["returned"] == 1
+    assert result["results"][0]["institution"] == "Example University"
+    assert result["results"][0]["access_status"] == "verified_pdf"
+
+
 def test_long_form_verified_work_is_listed_before_article(tmp_path):
     thesis = Paper(
         "",
