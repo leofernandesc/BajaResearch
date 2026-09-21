@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "cases": [
     {
       "id": "baja_suspension_thesis",
@@ -57,6 +57,38 @@
       "full_text_url": "https://repository.example.edu/bitstream/456.pdf",
       "response_content_type": "application/pdf",
       "response_prefix": "%PDF-"
+    },
+    {
+      "id": "repository_rate_limited",
+      "expected": "reject_temporary_access",
+      "title": "Projeto de suspensão para um protótipo Baja SAE",
+      "document_type": "bachelorThesis",
+      "technical_focus": "suspension optimization",
+      "application_context": "Baja SAE",
+      "full_text_url": "https://repository.example.edu/rate-limited.pdf",
+      "response_status": 429,
+      "response_content_type": "application/json"
+    },
+    {
+      "id": "repository_login_redirect",
+      "expected": "reject_not_pdf",
+      "title": "Projeto de suspensão para um protótipo Baja SAE",
+      "document_type": "bachelorThesis",
+      "technical_focus": "suspension optimization",
+      "application_context": "Baja SAE",
+      "full_text_url": "https://repository.example.edu/download/789",
+      "redirect_url": "https://repository.example.edu/login",
+      "response_content_type": "text/html"
+    },
+    {
+      "id": "private_redirect_target",
+      "expected": "reject_private_redirect",
+      "title": "Projeto de suspensão para um protótipo Baja SAE",
+      "document_type": "bachelorThesis",
+      "technical_focus": "suspension optimization",
+      "application_context": "Baja SAE",
+      "full_text_url": "https://repository.example.edu/download/private",
+      "redirect_url": "http://127.0.0.1/document.pdf"
     }
   ]
 }
