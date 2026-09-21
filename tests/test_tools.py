@@ -217,3 +217,66 @@ def test_unreachable_open_access_link_is_not_recommended(tmp_path):
     assert open_paper.title in titles
     assert unavailable.title not in titles
     assert result["filters_applied"]["unverified_open_access"] > 0
+
+
+def test_long_form_verified_work_is_listed_before_article(tmp_path):
+    thesis = Paper(
+        "",
+        "Projeto de suspensão para protótipo Baja SAE",
+        document_type="bachelorThesis",
+        open_access_url="https://repository.example/thesis.pdf",
+        sources=["oasisbr"],
+        source_scores={"oasisbr": 0.5},
+    )
+    article = Paper(
+        "",
+        "Suspension optimization for a Baja SAE off-road vehicle",
+        document_type="article",
+        citation_count=500,
+        open_access_url="https://journal.example/article.pdf",
+        sources=["openalex"],
+        source_scores={"openalex": 1.0},
+    )
+    clients = {
+        name: FakeClient()
+        for name in ("oasisbr", "bdtd", "openalex", "semantic_scholar", "crossref")
+    }
+    for client in clients.values():
+        client.papers = [article, thesis]
+
+    class StubPdfVerifier:
+        def check_many(self, urls):
+            return {
+                url: AccessCheck(
+                    "verified_pdf",
+                    url,
+                    final_url=url,
+                    http_status=206,
+                    content_type="application/pdf",
+                    evidence={"pdf_magic": True},
+                )
+                for url in urls
+            }
+
+        def check(self, url):
+            return self.check_many([url])[url]
+
+        def close(self):
+            pass
+
+    service = ResearchService(
+        config=ResearchConfig(cache_ttl_hours=0),
+        storage=ResearchStorage(tmp_path / "cache.sqlite3"),
+        clients=clients,
+        link_validator=StubPdfVerifier(),
+    )
+    result = service.search(
+        queries=["Baja SAE suspension optimization"],
+        technical_focus="suspension optimization",
+        limit=2,
+    )
+    assert [paper["title"] for paper in result["results"]] == [
+        thesis.title,
+        article.title,
+    ]
+    assert all(paper["access_status"] == "verified_pdf" for paper in result["results"])

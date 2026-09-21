@@ -73,19 +73,24 @@ def test_rate_limit_opens_circuit_for_remaining_queries(tmp_path):
         storage=ResearchStorage(tmp_path / "research.sqlite3"),
         circuit_breaker_seconds=60,
     )
-    results = router.search(
+    first = router.search(
         queries=["query one", "query two"],
         limit=5,
         year_from=None,
         year_to=None,
         prefer_long_form=True,
     )
+    second = router.search(
+        queries=["query three"],
+        limit=5,
+        year_from=None,
+        year_to=None,
+        prefer_long_form=True,
+    )
     assert client.search_calls == 1
-    assert [result.error["code"] for result in results] == [
-        "rate_limited",
-        "circuit_open",
-    ]
-    assert results[1].skipped is True
+    assert first[0].error["code"] == "rate_limited"
+    assert second[0].error["code"] == "circuit_open"
+    assert second[0].skipped is True
 
 
 def test_crossref_is_not_used_as_a_candidate_search_source(tmp_path):
@@ -110,3 +115,14 @@ def test_crossref_is_not_used_as_a_candidate_search_source(tmp_path):
     assert "Baja SAE chassis" in titles
     assert "Unrelated Crossref result" not in titles
     assert crossref.search_calls == 0
+
+
+def test_query_priority_avoids_overconstrained_thesis_suffix():
+    prioritized = SearchRouter._prioritized_queries(
+        [
+            "Baja SAE suspension optimization",
+            "Baja SAE suspension optimization institutional repository undergraduate thesis",
+            "off-road suspension geometry",
+        ]
+    )
+    assert prioritized[0] == "Baja SAE suspension optimization"

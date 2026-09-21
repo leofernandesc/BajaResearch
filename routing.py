@@ -114,8 +114,8 @@ class SearchRouter:
                 query=query,
                 error={
                     "source": source,
-                    "code": "global_deadline",
-                    "message": "global academic-search deadline reached",
+                    "code": "request_budget_exhausted",
+                    "message": "source request budget was exhausted",
                     "retryable": True,
                 },
                 skipped=True,
@@ -211,8 +211,8 @@ class SearchRouter:
                             source=source,
                             error={
                                 "source": source,
-                                "code": "global_deadline",
-                                "message": "global academic-search deadline reached",
+                                "code": "request_budget_exhausted",
+                                "message": "source request budget was exhausted",
                                 "retryable": True,
                             },
                             skipped=True,
@@ -243,6 +243,28 @@ class SearchRouter:
             for paper in result.papers
         ]
 
+    @staticmethod
+    def _prioritized_queries(queries: list[str]) -> list[str]:
+        def score(query: str) -> tuple[int, int]:
+            normalized = query.casefold().replace("-", " ")
+            context = (
+                4
+                if "baja sae" in normalized or "mini baja" in normalized
+                else 3
+                if "formula sae" in normalized or "formula student" in normalized
+                else 2
+                if "off road" in normalized or "all terrain" in normalized
+                else 1
+                if "vehicle" in normalized or "atv" in normalized
+                else 0
+            )
+            # Repository/thesis tokens are retrieval hints, not technical
+            # content. Prefer the shortest strongly contextual query so VuFind
+            # does not require every expansion term at once.
+            return context, -len(query)
+
+        return sorted(dict.fromkeys(queries), key=score, reverse=True)
+
     def search(
         self,
         *,
@@ -262,15 +284,21 @@ class SearchRouter:
             "open_access_only": True,
         }
         results: list[SourceResult] = []
-        repository_queries = queries[: min(3, len(queries))]
-        global_queries = queries[: min(2, len(queries))]
+        prioritized = self._prioritized_queries(queries)
+        # One query per keyless endpoint avoids the burst behavior that causes
+        # 429/503 responses. Different sources still cover complementary query
+        # variants, and each source/query result has its own cache.
+        repository_queries = prioritized[:1]
+        bdtd_queries = prioritized[1:2] or repository_queries
+        global_queries = prioritized[:1]
 
+        oasis_deadline = min(deadline, time.monotonic() + 5.0)
         results.extend(
             self._stage(
                 ["oasisbr"],
                 repository_queries,
                 filters=filters,
-                deadline=deadline,
+                deadline=oasis_deadline,
             )
         )
         long_form_count = sum(
@@ -278,18 +306,20 @@ class SearchRouter:
             for paper in self._papers(results)
         )
         if prefer_long_form and long_form_count < max(limit * 2, 6):
+            bdtd_deadline = min(deadline, time.monotonic() + 4.0)
             results.extend(
                 self._stage(
                     ["bdtd"],
-                    repository_queries,
+                    bdtd_queries,
                     filters=filters,
-                    deadline=deadline,
+                    deadline=bdtd_deadline,
                 )
             )
 
+        openalex_deadline = min(deadline, time.monotonic() + 6.0)
         results.extend(
             self._stage(
-                ["openalex"], global_queries, filters=filters, deadline=deadline
+                ["openalex"], global_queries, filters=filters, deadline=openalex_deadline
             )
         )
         usable_count = len(self._papers(results))

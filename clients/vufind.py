@@ -117,6 +117,8 @@ class VuFindClient:
     def _papers(self, payload: Any) -> list[Paper]:
         root = as_mapping(payload)
         records = root.get("records")
+        if records is None and root.get("status") == "OK" and int(root.get("resultCount") or 0) == 0:
+            return []
         if not isinstance(records, list):
             raise SourceError(
                 self.source,

@@ -48,3 +48,9 @@ def test_fuzzy_matching_is_conservative_and_does_not_merge_short_titles():
     unrelated = Paper("", "Chassis design", year=2020)
     merged = deduplicate_papers([close, variant, unrelated])
     assert len(merged) == 2
+
+
+def test_repeated_normalized_object_without_year_is_not_duplicated():
+    paper = Paper("", "Projeto de suspensão Baja SAE", sources=["oasisbr"])
+    merged = deduplicate_papers([paper, paper, paper])
+    assert len(merged) == 1

@@ -1,5 +1,9 @@
 from models import Paper
-from ranking import is_electric_vehicle_paper, rank_papers
+from ranking import (
+    filter_relevant_papers,
+    is_electric_vehicle_paper,
+    rank_papers,
+)
 
 
 def test_direct_query_match_beats_high_citation_off_topic_paper():
@@ -24,9 +28,9 @@ def test_direct_query_match_beats_high_citation_off_topic_paper():
     ranked = rank_papers([famous, direct], ["Baja SAE suspension optimization"], current_year=2026)
     assert ranked[0].title == direct.title
     assert set(ranked[0].score_details) == {
-        "query_relevance", "source_relevance", "multi_source",
-        "citation_signal", "recency_signal", "context_signal",
-        "thesis_signal", "context_gate",
+        "technical_relevance", "application_context", "source_relevance",
+        "completeness", "multi_source", "citation_signal", "recency_signal",
+        "long_form", "passes_technical_gate", "passes_context_gate",
     }
 
 
@@ -71,9 +75,9 @@ def test_thesis_preference_and_context_gate_are_visible_in_score_details():
         require_context=True,
     )
     assert ranked[0].title == thesis.title
-    assert ranked[0].score_details["thesis_signal"] == 1.0
-    assert ranked[0].score_details["context_gate"] == 1.0
-    assert ranked[1].score_details["context_gate"] == 0.55
+    assert ranked[0].score_details["long_form"] == 1.0
+    assert ranked[0].score_details["passes_context_gate"] == 1.0
+    assert ranked[1].score_details["passes_context_gate"] == 0.0
 
 
 def test_spanish_baja_word_does_not_fake_baja_sae_context():
@@ -92,8 +96,8 @@ def test_spanish_baja_word_does_not_fake_baja_sae_context():
         prefer_theses=True,
         require_context=True,
     )
-    assert ranked[0].score_details["context_signal"] == 0.0
-    assert ranked[0].score_details["context_gate"] == 0.55
+    assert ranked[0].score_details["application_context"] == 0.0
+    assert ranked[0].score_details["passes_context_gate"] == 0.0
 
 
 def test_portuguese_electric_vehicle_title_is_detected():
@@ -104,10 +108,54 @@ def test_portuguese_electric_vehicle_title_is_detected():
         year=2023,
     )
     ranked = rank_papers([paper], ["electronics Baja SAE"], prefer_theses=True)
-    assert ranked[0].score_details["query_relevance"] >= 0.0
+    assert ranked[0].score_details["technical_relevance"] >= 0.0
     assert is_electric_vehicle_paper(paper) is True
 
 
 def test_indonesian_electric_vehicle_title_is_detected():
     paper = Paper("", "Analisa struktur sasis kendaraan mobil listrik Baja SAE")
     assert is_electric_vehicle_paper(paper) is True
+
+
+def test_formula_sae_eletrico_reverse_order_is_detected():
+    paper = Paper("", "Otimização da suspensão de um veículo Formula SAE elétrico")
+    assert is_electric_vehicle_paper(paper) is True
+
+
+def test_hard_gates_reject_wrong_focus_and_false_tcc_match():
+    good = Paper(
+        "",
+        "Projeto de suspensão dianteira para um veículo mini Baja SAE",
+        document_type="bachelorThesis",
+    )
+    aero = Paper(
+        "",
+        "Aerodynamic optimization of a Formula Student rear wing",
+        document_type="article",
+    )
+    false_tcc = Paper(
+        "",
+        "A escrita do TCC e a formação universitária",
+        document_type="article",
+    )
+    kept, rejected = filter_relevant_papers(
+        [aero, false_tcc, good],
+        "suspension optimization",
+        ["Baja SAE suspension optimization"],
+        require_context=True,
+    )
+    assert [paper.title for paper in kept] == [good.title]
+    assert rejected["wrong_technical_focus"] == 2
+    assert rejected["missing_baja_context"] == 0
+
+
+def test_hard_gate_rejects_matching_technical_paper_without_vehicle_context():
+    generic = Paper("", "Suspension optimization methods", document_type="article")
+    kept, rejected = filter_relevant_papers(
+        [generic],
+        "suspension optimization",
+        ["Baja SAE suspension optimization"],
+        require_context=True,
+    )
+    assert kept == []
+    assert rejected["missing_baja_context"] == 1

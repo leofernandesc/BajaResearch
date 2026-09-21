@@ -1,4 +1,4 @@
-"""Deterministic, inspectable ranking performed before the Hermes LLM."""
+"""Deterministic quality gates and ranking before Hermes sees any result."""
 
 from __future__ import annotations
 
@@ -8,45 +8,79 @@ import math
 from typing import Iterable
 
 try:
-    from .models import Paper, normalize_title
-except ImportError:  # pragma: no cover - direct test imports
-    from models import Paper, normalize_title
+    from .models import Paper, is_long_form_document, normalize_title
+except ImportError:  # pragma: no cover
+    from models import Paper, is_long_form_document, normalize_title
 
+
+RANKING_VERSION = "2"
+TECHNICAL_RELEVANCE_THRESHOLD = 0.30
+APPLICATION_CONTEXT_THRESHOLD = 0.70
 
 _STOPWORDS = {
     "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in",
     "into", "is", "of", "on", "or", "the", "to", "with", "da", "das", "de",
     "do", "dos", "e", "em", "para", "por", "um", "uma", "que", "na", "no",
+    "sobre", "como", "using", "use", "study", "paper", "work", "research",
 }
-_EXPLICIT_CONTEXT_TERMS = {
-    "baja sae", "formula sae", "formula student", "off road",
-    "offroad", "atv", "motorsport",
+_CONTEXT_TOKENS = {
+    "baja", "sae", "formula", "student", "mini", "off", "road", "offroad",
+    "vehicle", "vehicles", "veiculo", "veiculos", "automotive", "motorsport",
+    "terrain", "all", "atv",
 }
-_GENERAL_VEHICLE_TERMS = {"automotive", "vehicle dynamics", "vehicle"}
-_THESIS_TERMS = {
-    "thesis", "dissertation", "tcc", "monograph", "monografia",
-    "undergraduate thesis", "master thesis", "doctoral thesis",
+_GENERIC_TECHNICAL_TOKENS = {
+    "analysis", "analise", "optimization", "optimisation", "otimizacao",
+    "design", "project", "projeto", "development", "desenvolvimento", "model",
+    "modeling", "modelling", "modelagem", "performance", "desempenho", "system",
+    "systems", "sistema", "sistemas", "method", "methods", "metodo", "simulation",
+    "simulacao", "evaluation", "avaliacao", "experimental", "numerical", "study",
+    "thesis", "dissertation", "monograph", "tcc", "repository", "institutional",
 }
-_REPOSITORY_TERMS = {
-    "repository", "institutional repository", "repositorio", "dspace",
-    "etd", "eprints", "scholarworks", "handle.net", "university archive",
+_TECHNICAL_ALIASES = {
+    "electronics": {
+        "electronic", "telemetry", "sensor", "sensors", "embedded", "can",
+        "acquisition", "instrumentation", "microcontroller",
+    },
+    "eletronica": {
+        "eletronico", "telemetria", "sensor", "sensores", "embarcado", "can",
+        "aquisicao", "instrumentacao", "microcontrolador",
+    },
+    "suspension": {"suspensao", "damper", "damping", "shock", "wishbone", "camber", "toe"},
+    "suspensao": {"suspension", "amortecedor", "amortecimento", "bandeja", "cambagem", "convergencia"},
+    "chassis": {"chassi", "frame", "spaceframe", "rollcage", "structure", "structural"},
+    "chassi": {"chassis", "estrutura", "estrutural", "gaiola"},
+    "brake": {"brakes", "braking", "caliper", "disc"},
+    "freio": {"freios", "frenagem", "pinça", "disco"},
+    "telemetry": {"telematics", "data", "acquisition", "sensor", "sensors"},
+    "telemetria": {"dados", "aquisicao", "sensor", "sensores"},
 }
+_STRONG_CONTEXT_TERMS = {
+    "baja sae", "sae baja", "mini baja", "formula sae", "formula student",
+    "off road", "offroad", "all terrain vehicle", "all terrain vehicles", "atv",
+}
+_MOTORSPORT_TERMS = {"motorsport", "race car", "racing vehicle", "competition vehicle"}
+_GENERAL_VEHICLE_TERMS = {"automotive", "vehicle dynamics", "ground vehicle"}
 _ELECTRIC_VEHICLE_TERMS = {
     "electric vehicle", "electric vehicles", "battery electric vehicle",
     "plug in hybrid", "plug in hybrid vehicle", "hybrid electric vehicle",
     "hybrid vehicle", "fuel cell vehicle", "electric mobility", "electric car",
     "electrified vehicle", "ev", "veiculo eletrico", "veiculos eletricos",
-    "carro eletrico", "mobilidade eletrica", "veiculo hibrido",
-    "veiculos hibridos", "celula a combustivel", "mobil listrik",
-    "kendaraan listrik", "electric baja", "baja electric", "electric atv",
-    "electric off road", "electric offroad", "electric formula sae",
+    "carro eletrico", "mobilidade eletrica", "veiculo hibrido", "veiculos hibridos",
+    "celula a combustivel", "mobil listrik", "kendaraan listrik", "electric baja",
+    "baja electric", "electric atv", "electric off road", "electric offroad",
+    "electric formula sae", "formula sae electric", "formula student electric",
     "electric formula student", "electric powertrain", "electric drivetrain",
-    "electric propulsion", "battery powered vehicle", "battery vehicle",
-    "hybrid baja", "hybrid atv", "vehiculo electrico", "vehiculos electricos",
-    "coche electrico", "movilidad electrica", "vehiculo hibrido",
-    "vehiculos hibridos", "electrofahrzeug", "elektrofahrzeuge", "elektroauto",
-    "hybridfahrzeug", "vehicule electrique", "vehicules electriques",
-    "voiture electrique", "vehicule hybride", "kenderaan elektrik",
+    "electric propulsion", "battery powered vehicle", "battery vehicle", "hybrid baja",
+    "baja hybrid", "hybrid atv", "vehiculo electrico", "vehiculos electricos",
+    "coche electrico", "movilidad electrica", "vehiculo hibrido", "vehiculos hibridos",
+    "electrofahrzeug", "elektrofahrzeuge", "elektroauto", "hybridfahrzeug",
+    "vehicule electrique", "vehicules electriques", "voiture electrique",
+    "vehicule hybride", "kenderaan elektrik", "formula sae eletrico",
+    "formula student eletrico", "baja sae eletrico", "veiculo formula sae eletrico",
+}
+_ELECTRIC_ADJECTIVES = {
+    "electric", "electrical", "eletrico", "eletrica", "eletricos", "eletricas",
+    "hybrid", "hibrido", "hibrida", "hibridos", "hibridas", "electrified",
 }
 _ELECTRIC_VEHICLE_SUPPORT_TERMS = {
     "battery", "charging", "charger", "powertrain", "fuel cell", "traction",
@@ -62,6 +96,10 @@ def _tokens(value: str) -> set[str]:
     }
 
 
+def _technical_tokens(value: str) -> set[str]:
+    return _tokens(value) - _CONTEXT_TOKENS - _GENERIC_TECHNICAL_TOKENS
+
+
 def _coverage(needles: set[str], haystack: str) -> float:
     if not needles:
         return 0.0
@@ -69,24 +107,35 @@ def _coverage(needles: set[str], haystack: str) -> float:
     return len(needles & present) / len(needles)
 
 
+def _technical_coverage(needles: set[str], haystack: str) -> float:
+    if not needles:
+        return 0.0
+    present = _tokens(haystack)
+    matched = 0
+    for needle in needles:
+        if needle in present or bool(_TECHNICAL_ALIASES.get(needle, set()) & present):
+            matched += 1
+    return matched / len(needles)
+
+
 def _contains_term(haystack: str, term: str) -> bool:
-    """Match normalized words/phrases without substring false positives."""
     needle = normalize_title(term)
-    padded = f" {haystack} "
-    return bool(needle) and f" {needle} " in padded
+    return bool(needle) and f" {needle} " in f" {haystack} "
 
 
 def electric_vehicle_signal(paper: Paper) -> float:
-    """Detect papers primarily about EV/hybrid/fuel-cell vehicles.
-
-    A generic mention of electricity is not enough. Strong title/topic/venue
-    evidence, or repeated/supporting evidence in the abstract, is required so
-    ordinary vehicle-electronics papers are not discarded accidentally.
-    """
+    """Detect EV/hybrid/fuel-cell scope, including reversed adjective order."""
     title_topics = normalize_title(
         " ".join([paper.title, paper.venue or "", *paper.topics])
     )
     if any(_contains_term(title_topics, term) for term in _ELECTRIC_VEHICLE_TERMS):
+        return 1.0
+    title_tokens = set(title_topics.split())
+    has_electric_adjective = bool(title_tokens & _ELECTRIC_ADJECTIVES)
+    has_vehicle_context = any(
+        _contains_term(title_topics, term) for term in _STRONG_CONTEXT_TERMS
+    )
+    if has_electric_adjective and has_vehicle_context:
         return 1.0
 
     abstract = normalize_title(paper.abstract or "")
@@ -104,24 +153,47 @@ def electric_vehicle_signal(paper: Paper) -> float:
 
 
 def is_electric_vehicle_paper(paper: Paper) -> bool:
-    """Return whether the record should be excluded by the BAJA default."""
     return electric_vehicle_signal(paper) >= 0.75
 
 
-def _query_relevance(paper: Paper, queries: Iterable[str]) -> float:
+def application_context_signal(paper: Paper) -> float:
+    haystack = normalize_title(
+        " ".join([paper.title, paper.abstract or "", paper.venue or "", *paper.topics])
+    )
+    matches = sum(
+        1 for term in _STRONG_CONTEXT_TERMS if _contains_term(haystack, term)
+    )
+    if matches:
+        return min(1.0, 0.80 + 0.10 * (matches - 1))
+    if any(_contains_term(haystack, term) for term in _MOTORSPORT_TERMS):
+        return 0.70
+    general = sum(
+        1 for term in _GENERAL_VEHICLE_TERMS if _contains_term(haystack, term)
+    )
+    return min(0.60, 0.30 * general)
+
+
+def technical_relevance_signal(
+    paper: Paper, technical_focus: str, queries: Iterable[str]
+) -> float:
     title = normalize_title(paper.title)
-    abstract = paper.abstract or ""
-    topics = " ".join(paper.topics)
+    abstract = normalize_title(paper.abstract or "")
+    topics = normalize_title(" ".join(paper.topics))
+    candidates = [technical_focus, *queries]
     best = 0.0
-    for query in queries:
-        normalized_query = normalize_title(query)
-        query_tokens = _tokens(query)
-        title_score = _coverage(query_tokens, title)
-        abstract_score = _coverage(query_tokens, abstract)
-        topic_score = _coverage(query_tokens, topics)
-        phrase_bonus = 0.18 if normalized_query and normalized_query in title else 0.0
-        candidate = min(1.0, 0.58 * title_score + 0.27 * abstract_score + 0.15 * topic_score + phrase_bonus)
-        best = max(best, candidate)
+    for candidate in candidates:
+        needles = _technical_tokens(candidate)
+        if not needles:
+            continue
+        score = (
+            0.65 * _technical_coverage(needles, title)
+            + 0.25 * _technical_coverage(needles, abstract)
+            + 0.10 * _technical_coverage(needles, topics)
+        )
+        normalized_candidate = normalize_title(candidate)
+        if normalized_candidate and normalized_candidate in title:
+            score += 0.10
+        best = max(best, min(1.0, score))
     return best
 
 
@@ -133,7 +205,7 @@ def _source_relevance(paper: Paper) -> float:
         except (TypeError, ValueError):
             continue
         values.append(numeric if numeric <= 1.0 else numeric / (1.0 + numeric))
-    return sum(values) / len(values) if values else (0.5 if paper.sources else 0.0)
+    return max(values, default=(0.5 if paper.sources else 0.0))
 
 
 def _citation_signal(paper: Paper, max_citations: int) -> float:
@@ -149,115 +221,116 @@ def _recency_signal(paper: Paper, current_year: int) -> float:
     return max(0.0, 1.0 - min(age, 40) / 40.0)
 
 
-def _context_signal(paper: Paper) -> float:
-    haystack = normalize_title(
-        " ".join([paper.title, paper.abstract or "", *paper.topics])
+def _completeness_signal(paper: Paper) -> float:
+    fields = (
+        bool(paper.authors),
+        paper.year is not None,
+        bool(paper.abstract),
+        bool(paper.venue or paper.institution),
+        bool(paper.document_type),
+        bool(paper.doi or paper.oasisbr_id or paper.bdtd_id),
     )
-    explicit_matches = sum(
-        1 for term in _EXPLICIT_CONTEXT_TERMS if _contains_term(haystack, term)
-    )
-    if explicit_matches:
-        return min(1.0, 0.8 + 0.1 * max(0, explicit_matches - 1))
-    # A generic mention such as “electric vehicle charging” in an abstract is
-    # not enough to make a paper Baja/vehicle-contextual. General vehicle
-    # signals must be visible in the title, venue, or topics.
-    title_topics = normalize_title(
-        " ".join([paper.title, paper.venue or "", *paper.topics])
-    )
-    general_matches = sum(
-        1
-        for term in _GENERAL_VEHICLE_TERMS
-        if _contains_term(title_topics, term)
-    )
-    return min(0.6, 0.3 * general_matches)
+    return sum(fields) / len(fields)
 
 
-def _thesis_signal(paper: Paper) -> float:
-    """Estimate whether a record is a thesis-like, repository-hosted work."""
-    document_type = normalize_title(
-        " ".join(
-            value
-            for value in (
-                paper.document_type,
-                str(paper.metadata.get("openalex_type") or ""),
-                str(paper.metadata.get("crossref_type") or ""),
-            )
-            if value
-        )
-    )
-    haystack = normalize_title(
-        " ".join(
-            [paper.title, paper.venue or "", paper.url or "", *paper.topics]
-        )
-    )
-    if any(term in document_type for term in ("thesis", "dissertation", "monograph")):
-        return 1.0
-    if any(term in haystack for term in _THESIS_TERMS):
-        return 1.0
-    if any(term in haystack for term in _REPOSITORY_TERMS):
-        return 0.45
-    return 0.0
+def quality_signals(
+    paper: Paper,
+    technical_focus: str,
+    queries: Iterable[str],
+    *,
+    max_citations: int = 0,
+    current_year: int | None = None,
+) -> dict[str, float]:
+    current_year = current_year or datetime.now().year
+    return {
+        "technical_relevance": technical_relevance_signal(
+            paper, technical_focus, queries
+        ),
+        "application_context": application_context_signal(paper),
+        "source_relevance": _source_relevance(paper),
+        "completeness": _completeness_signal(paper),
+        "multi_source": min(1.0, max(0, len(set(paper.sources)) - 1) / 2.0),
+        "citation_signal": _citation_signal(paper, max_citations),
+        "recency_signal": _recency_signal(paper, current_year),
+        "long_form": 1.0 if is_long_form_document(paper.document_type) else 0.0,
+    }
+
+
+def filter_relevant_papers(
+    papers: Iterable[Paper],
+    technical_focus: str,
+    queries: Iterable[str],
+    *,
+    require_context: bool = True,
+) -> tuple[list[Paper], dict[str, int]]:
+    """Hard-reject wrong-topic and non-Baja records before final ranking."""
+    query_list = list(queries)
+    kept: list[Paper] = []
+    rejected = {"wrong_technical_focus": 0, "missing_baja_context": 0}
+    for paper in papers:
+        technical = technical_relevance_signal(paper, technical_focus, query_list)
+        context = application_context_signal(paper)
+        if technical < TECHNICAL_RELEVANCE_THRESHOLD:
+            rejected["wrong_technical_focus"] += 1
+            continue
+        if require_context and context < APPLICATION_CONTEXT_THRESHOLD:
+            rejected["missing_baja_context"] += 1
+            continue
+        kept.append(paper)
+    return kept, rejected
 
 
 def rank_papers(
     papers: Iterable[Paper],
     queries: Iterable[str],
     *,
+    technical_focus: str | None = None,
     limit: int | None = None,
     current_year: int | None = None,
     prefer_theses: bool = False,
     require_context: bool = False,
 ) -> list[Paper]:
-    """Rank papers with fixed weights and retain component scores.
-
-    Query relevance carries most of the score. Citations are logarithmic and
-    weighted at 0.10, so a highly cited but off-topic paper cannot dominate a
-    directly matching engineering paper.
-    """
+    """Rank within a document class; long-form ordering is a separate policy."""
     query_list = [str(query).strip() for query in queries if str(query).strip()]
+    focus = (technical_focus or (query_list[0] if query_list else "")).strip()
     current_year = current_year or datetime.now().year
     values = list(papers)
     max_citations = max((paper.citation_count or 0 for paper in values), default=0)
     ranked: list[Paper] = []
     for paper in values:
-        components = {
-            "query_relevance": _query_relevance(paper, query_list),
-            "source_relevance": _source_relevance(paper),
-            "multi_source": min(1.0, max(0, len(set(paper.sources)) - 1) / 2.0),
-            "citation_signal": _citation_signal(paper, max_citations),
-            "recency_signal": _recency_signal(paper, current_year),
-            "context_signal": _context_signal(paper),
-            "thesis_signal": _thesis_signal(paper) if prefer_theses else 0.0,
-        }
-        if prefer_theses:
-            score = (
-                0.47 * components["query_relevance"]
-                + 0.10 * components["source_relevance"]
-                + 0.08 * components["multi_source"]
-                + 0.07 * components["citation_signal"]
-                + 0.03 * components["recency_signal"]
-                + 0.07 * components["context_signal"]
-                + 0.18 * components["thesis_signal"]
+        components = quality_signals(
+            paper,
+            focus,
+            query_list,
+            max_citations=max_citations,
+            current_year=current_year,
+        )
+        score = (
+            0.52 * components["technical_relevance"]
+            + 0.25 * components["application_context"]
+            + 0.08 * components["source_relevance"]
+            + 0.05 * components["completeness"]
+            + 0.04 * components["multi_source"]
+            + 0.04 * components["citation_signal"]
+            + 0.02 * components["recency_signal"]
+        )
+        # Compatibility parameters remain accepted, but neither can weaken the
+        # hard gates applied by ``filter_relevant_papers`` in the service.
+        components["passes_technical_gate"] = float(
+            components["technical_relevance"] >= TECHNICAL_RELEVANCE_THRESHOLD
+        )
+        components["passes_context_gate"] = float(
+            not require_context
+            or components["application_context"] >= APPLICATION_CONTEXT_THRESHOLD
+        )
+        ranked.append(
+            replace(
+                paper,
+                ranking_score=score,
+                score_details=components,
+                ranking_version=RANKING_VERSION,
             )
-        else:
-            score = (
-                0.55 * components["query_relevance"]
-                + 0.12 * components["source_relevance"]
-                + 0.10 * components["multi_source"]
-                + 0.10 * components["citation_signal"]
-                + 0.05 * components["recency_signal"]
-                + 0.08 * components["context_signal"]
-            )
-        if require_context and components["context_signal"] == 0.0:
-            # Keep general-domain fallback papers available, but make a paper
-            # with no Baja/vehicle context lose to an otherwise comparable
-            # contextual result.
-            score *= 0.55
-            components["context_gate"] = 0.55
-        else:
-            components["context_gate"] = 1.0
-        ranked.append(replace(paper, ranking_score=score, score_details=components))
-
+        )
     ranked.sort(
         key=lambda paper: (
             -(paper.ranking_score or 0.0),
@@ -269,4 +342,15 @@ def rank_papers(
     return ranked[:limit] if limit is not None else ranked
 
 
-__all__ = ["electric_vehicle_signal", "is_electric_vehicle_paper", "rank_papers"]
+__all__ = [
+    "APPLICATION_CONTEXT_THRESHOLD",
+    "RANKING_VERSION",
+    "TECHNICAL_RELEVANCE_THRESHOLD",
+    "application_context_signal",
+    "electric_vehicle_signal",
+    "filter_relevant_papers",
+    "is_electric_vehicle_paper",
+    "quality_signals",
+    "rank_papers",
+    "technical_relevance_signal",
+]

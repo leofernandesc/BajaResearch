@@ -400,6 +400,8 @@ def make_internal_id(paper: Paper) -> str:
 
 def _identity_ids(paper: Paper) -> set[str]:
     keys: set[str] = set()
+    if paper.internal_id:
+        keys.add(f"internal:{paper.internal_id}")
     if paper.doi:
         keys.add(f"doi:{paper.doi}")
     if paper.openalex_id:

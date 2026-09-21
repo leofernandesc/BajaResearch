@@ -19,7 +19,7 @@ class ResearchConfig:
     semantic_scholar_api_key: str | None = None
     crossref_mailto: str | None = None
     unpaywall_email: str | None = None
-    access_timeout_seconds: float = 8.0
+    access_timeout_seconds: float = 5.0
     access_valid_ttl_hours: float = 168.0
     access_invalid_ttl_hours: float = 24.0
     access_temporary_ttl_hours: float = 1.0
@@ -79,7 +79,7 @@ def config_from_context(ctx: Any) -> ResearchConfig:
         crossref_mailto=os.getenv("CROSSREF_MAILTO") or None,
         unpaywall_email=os.getenv("UNPAYWALL_EMAIL") or None,
         access_timeout_seconds=_env_float(
-            "BAJA_RESEARCH_ACCESS_TIMEOUT_SECONDS", 8.0
+            "BAJA_RESEARCH_ACCESS_TIMEOUT_SECONDS", 5.0
         ),
         access_valid_ttl_hours=_env_float(
             "BAJA_RESEARCH_ACCESS_VALID_TTL_HOURS", 168.0

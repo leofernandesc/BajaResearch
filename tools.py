@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import json
 import logging
 from pathlib import Path
+import time
 from typing import Any, Callable, Iterable, Mapping
 
 try:
@@ -21,10 +22,22 @@ try:
     from .clients.unpaywall import UnpaywallClient
     from .citations import format_abnt, format_bibtex
     from .config import ResearchConfig, config_from_context
-    from .models import Paper, deduplicate_papers, merge_papers, normalize_doi
+    from .models import (
+        Paper,
+        deduplicate_papers,
+        is_long_form_document,
+        merge_papers,
+        normalize_doi,
+    )
     from .querying import expand_plugin_queries
     from .routing import SearchRouter
-    from .ranking import is_electric_vehicle_paper, rank_papers
+    from .ranking import (
+        application_context_signal,
+        filter_relevant_papers,
+        is_electric_vehicle_paper,
+        rank_papers,
+        technical_relevance_signal,
+    )
     from .schemas import (
         CITATION_SCHEMA,
         GET_PAPER_SCHEMA,
@@ -49,10 +62,10 @@ except ImportError:  # pragma: no cover - direct module imports
     from clients.unpaywall import UnpaywallClient
     from citations import format_abnt, format_bibtex
     from config import ResearchConfig, config_from_context
-    from models import Paper, deduplicate_papers, merge_papers, normalize_doi
+    from models import Paper, deduplicate_papers, is_long_form_document, merge_papers, normalize_doi
     from querying import expand_plugin_queries
     from routing import SearchRouter
-    from ranking import is_electric_vehicle_paper, rank_papers
+    from ranking import application_context_signal, filter_relevant_papers, is_electric_vehicle_paper, rank_papers, technical_relevance_signal
     from schemas import (
         CITATION_SCHEMA,
         GET_PAPER_SCHEMA,
@@ -145,7 +158,7 @@ class ResearchService:
             clients=self.clients,
             storage=self.storage,
             cache_ttl_hours=self.config.source_cache_ttl_hours,
-            global_timeout_seconds=self.config.global_timeout_seconds,
+            global_timeout_seconds=max(5.0, self.config.global_timeout_seconds * 0.65),
             circuit_breaker_seconds=self.config.circuit_breaker_seconds,
         )
         self.last_status: dict[str, Any] = {}
@@ -239,22 +252,6 @@ class ResearchService:
         )
 
     @staticmethod
-    def _prioritize_explicit_context(papers: list[Paper]) -> list[Paper]:
-        """Keep generic-domain fallback papers behind explicit Baja context.
-
-        A broad query can still need general automotive literature, but when
-        the retrieval set contains explicit Baja/Formula/off-road/ATV or
-        motorsport records, those are the useful first-class answer.
-        """
-        contextual = [
-            paper for paper in papers if (paper.score_details.get("context_signal") or 0.0) >= 0.75
-        ]
-        if not contextual:
-            return papers
-        contextual_ids = {paper.internal_id for paper in contextual}
-        return contextual + [paper for paper in papers if paper.internal_id not in contextual_ids]
-
-    @staticmethod
     def _filter_search_candidates(
         papers: list[Paper],
         *,
@@ -277,7 +274,10 @@ class ResearchService:
             if exclude_electric_vehicles and is_electric_vehicle_paper(paper):
                 counts["electric_vehicle"] += 1
                 continue
-            if open_access_only and not paper.open_access_url:
+            has_access_path = bool(paper.candidate_full_text_urls()) or bool(
+                paper.landing_url and set(paper.sources) & {"oasisbr", "bdtd"}
+            )
+            if open_access_only and not has_access_path:
                 counts["not_open_access"] += 1
                 continue
             kept.append(paper)
@@ -289,53 +289,78 @@ class ResearchService:
         *,
         limit: int,
         open_access_only: bool,
+        prefer_long_form: bool,
+        deadline: float | None = None,
     ) -> tuple[list[Paper], int]:
         """Select final results, validating OA URLs before recommendation."""
+        long_form = [paper for paper in ranked if is_long_form_document(paper.document_type)]
+        articles = [paper for paper in ranked if not is_long_form_document(paper.document_type)]
+        ordered = [*long_form, *articles] if prefer_long_form else [*articles, *long_form]
         if not open_access_only:
-            final = ranked[:limit]
+            final = ordered[:limit]
             self._validate_papers(final)
             return final, 0
-        # Validate a bounded ranked window so dead repository records can be
-        # skipped without issuing a request for every raw source result.
-        candidate_window = ranked[: min(len(ranked), max(40, limit * 8))]
-        self._validate_papers(candidate_window)
-        unresolved = [
-            paper for paper in candidate_window if paper.access_status != "verified_pdf"
-        ]
-        for paper in unresolved:
-            try:
-                self.repository_resolver.resolve(paper)
-            except Exception:
-                logger.info(
-                    "event=repository_resolution status=error paper_id=%s",
-                    paper.internal_id,
-                    exc_info=True,
-                )
-            if paper.doi and self.unpaywall_client.configured:
+        # Work in small ordered batches and stop as soon as the final count is
+        # filled. This bounds network work for WhatsApp while preserving the
+        # long-form-first policy.
+        candidate_window = ordered[: min(len(ordered), max(12, limit * 4))]
+        usable: list[Paper] = []
+        attempted = 0
+        for offset in range(0, len(candidate_window), 4):
+            if deadline is not None and time.monotonic() >= deadline:
+                break
+            batch = candidate_window[offset : offset + 4]
+            attempted += len(batch)
+            self._validate_papers(batch)
+            for paper in batch:
+                if paper.access_status == "verified_pdf" and paper.full_text_url:
+                    usable.append(paper)
+            if len(usable) >= limit:
+                break
+
+            for paper in batch:
+                if paper.access_status == "verified_pdf":
+                    continue
+                if deadline is not None and time.monotonic() >= deadline:
+                    break
                 try:
-                    resolution = self.unpaywall_client.resolve(paper.doi)
-                    existing = list(paper.metadata.get("full_text_candidates") or [])
-                    paper.metadata["full_text_candidates"] = list(
-                        dict.fromkeys([*existing, *resolution.get("candidates", [])])
-                    )
-                    paper.provenance["unpaywall"] = {
-                        "doi": paper.doi,
-                        "is_oa": resolution.get("is_oa"),
-                        "oa_status": resolution.get("oa_status"),
-                    }
-                except SourceError:
+                    self.repository_resolver.resolve(paper)
+                except Exception:
                     logger.info(
-                        "event=unpaywall_resolution status=error paper_id=%s",
+                        "event=repository_resolution status=error paper_id=%s",
                         paper.internal_id,
+                        exc_info=True,
                     )
-        if unresolved:
-            self._validate_papers(unresolved)
-        usable = [
-            paper
-            for paper in candidate_window
-            if paper.access_status == "verified_pdf" and paper.full_text_url
-        ]
-        rejected = len(candidate_window) - len(usable)
+                if paper.doi and self.unpaywall_client.configured:
+                    try:
+                        resolution = self.unpaywall_client.resolve(paper.doi)
+                        existing = list(paper.metadata.get("full_text_candidates") or [])
+                        paper.metadata["full_text_candidates"] = list(
+                            dict.fromkeys([*existing, *resolution.get("candidates", [])])
+                        )
+                        paper.provenance["unpaywall"] = {
+                            "doi": paper.doi,
+                            "is_oa": resolution.get("is_oa"),
+                            "oa_status": resolution.get("oa_status"),
+                        }
+                    except SourceError:
+                        logger.info(
+                            "event=unpaywall_resolution status=error paper_id=%s",
+                            paper.internal_id,
+                        )
+                self._validate_papers([paper])
+                if paper.access_status == "verified_pdf" and paper.full_text_url:
+                    usable.append(paper)
+                    if len(usable) >= limit:
+                        break
+            if len(usable) >= limit:
+                break
+        usable_ids = {paper.internal_id for paper in usable}
+        rejected = sum(
+            1
+            for paper in candidate_window[:attempted]
+            if paper.internal_id not in usable_ids
+        )
         return usable[:limit], rejected
 
     def _source_info(self, source: str, client: Any) -> dict[str, Any]:
@@ -478,9 +503,11 @@ class ResearchService:
         prefer_theses: bool = True,
         baja_context: bool = True,
         exclude_electric_vehicles: bool = True,
+        technical_focus: str | None = None,
         original_query: str | None = None,
         refresh_cache: bool = False,
     ) -> dict[str, Any]:
+        search_deadline = time.monotonic() + self.config.global_timeout_seconds
         effective_queries = expand_plugin_queries(
             queries, baja_context=baja_context, prefer_theses=prefer_theses
         )
@@ -492,6 +519,7 @@ class ResearchService:
             "prefer_theses": prefer_theses,
             "baja_context": baja_context,
             "exclude_electric_vehicles": exclude_electric_vehicles,
+            "technical_focus": technical_focus or queries[0],
         }
         key = _cache_key(effective_queries, filters)
         if not refresh_cache and self.config.cache_ttl_hours > 0:
@@ -547,11 +575,41 @@ class ResearchService:
                     ],
                 ]
             )
+        focus = (technical_focus or queries[0]).strip()
+        repository_candidates = [
+            paper
+            for paper in unique
+            if set(paper.sources) & {"oasisbr", "bdtd"}
+            and application_context_signal(paper) >= 0.70
+            and (
+                technical_relevance_signal(paper, focus, effective_queries) >= 0.30
+                or "bdtd" in paper.sources
+            )
+        ][: max(limit * 2, 6)]
+        for paper in repository_candidates:
+            if time.monotonic() >= search_deadline:
+                break
+            try:
+                self.repository_resolver.resolve(paper)
+            except Exception:
+                logger.info(
+                    "event=repository_metadata_enrichment status=error paper_id=%s",
+                    paper.internal_id,
+                    exc_info=True,
+                )
+        unique, relevance_counts = filter_relevant_papers(
+            unique,
+            focus,
+            effective_queries,
+            require_context=baja_context,
+        )
+        filter_counts.update(relevance_counts)
         statuses = self._aggregate_statuses(source_results)
         self.last_status = statuses
         ranked = rank_papers(
             unique,
             effective_queries,
+            technical_focus=focus,
             limit=None,
             prefer_theses=prefer_theses,
             require_context=baja_context,
@@ -560,13 +618,17 @@ class ResearchService:
         ranked = rank_papers(
             stored,
             effective_queries,
+            technical_focus=focus,
             limit=None,
             prefer_theses=prefer_theses,
             require_context=baja_context,
         )
-        ranked = self._prioritize_explicit_context(ranked)
         final, rejected_links = self._select_final_papers(
-            ranked, limit=limit, open_access_only=open_access_only
+            ranked,
+            limit=limit,
+            open_access_only=open_access_only,
+            prefer_long_form=prefer_theses,
+            deadline=search_deadline,
         )
         filter_counts["unverified_open_access"] = rejected_links
         final = self.storage.upsert_papers(final)
@@ -574,6 +636,14 @@ class ResearchService:
         if filter_counts["electric_vehicle"]:
             filter_warnings.append(
                 f"{filter_counts['electric_vehicle']} resultado(s) sobre veículos elétricos/híbridos foram excluídos."
+            )
+        if filter_counts.get("wrong_technical_focus"):
+            filter_warnings.append(
+                f"{filter_counts['wrong_technical_focus']} resultado(s) foram excluídos por não tratar do foco técnico solicitado."
+            )
+        if filter_counts.get("missing_baja_context"):
+            filter_warnings.append(
+                f"{filter_counts['missing_baja_context']} resultado(s) foram excluídos por não ter contexto Baja/Formula/off-road suficiente."
             )
         if open_access_only and filter_counts["unverified_open_access"]:
             filter_warnings.append(
@@ -714,27 +784,38 @@ class ResearchService:
                 related_filter_counts[key] = related_filter_counts.get(key, 0) + value
         related = deduplicate_papers(related)
         related = [candidate for candidate in related if not self._same_paper(candidate, paper)]
+        related, relevance_counts = filter_relevant_papers(
+            related,
+            paper.title,
+            [paper.title, *paper.topics],
+            require_context=True,
+        )
+        for key, value in relevance_counts.items():
+            related_filter_counts[key] = related_filter_counts.get(key, 0) + value
         related = rank_papers(
             related,
             [paper.title, *paper.topics],
+            technical_focus=paper.title,
             limit=None,
             prefer_theses=True,
             require_context=True,
         )
-        related = self._prioritize_explicit_context(related)
         related, rejected_links = self._select_final_papers(
-            related, limit=limit, open_access_only=True
+            related,
+            limit=limit,
+            open_access_only=True,
+            prefer_long_form=True,
         )
         related_filter_counts["unverified_open_access"] = rejected_links
         stored = self.storage.upsert_papers(related)
         related = rank_papers(
             stored,
             [paper.title, *paper.topics],
+            technical_focus=paper.title,
             limit=None,
             prefer_theses=True,
             require_context=True,
         )
-        related = self._prioritize_explicit_context(related)
         related = related[:limit]
         warnings = self._warnings(statuses)
         if related_filter_counts["electric_vehicle"]:

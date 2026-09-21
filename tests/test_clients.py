@@ -186,6 +186,20 @@ def test_bdtd_normalizes_master_thesis_and_direct_pdf_candidate():
     ]
 
 
+def test_vufind_zero_results_is_a_successful_empty_search():
+    def handler(request):
+        return httpx.Response(
+            200, json={"resultCount": 0, "status": "OK"}, request=request
+        )
+
+    raw = JsonHttpClient(
+        "https://bdtd.ibict.br/vufind/api/v1",
+        "bdtd",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    assert BdtdClient(http=raw).search("no matching work") == []
+
+
 def test_dspace7_repository_resolution_enriches_and_finds_original_pdf():
     item_id = "d64c5b62-e396-41e4-b978-2298433e0595"
 
