@@ -57,6 +57,11 @@ def test_invalid_public_link_is_not_exposed():
 
 def test_document_type_normalization_does_not_infer_tcc_from_title() -> None:
     assert normalize_document_type("bachelorThesis") == "bachelor_thesis"
+    assert normalize_document_type("TCC") == "bachelor_thesis"
+    assert (
+        normalize_document_type("Trabalho de Conclusão de Curso (Graduação)")
+        == "bachelor_thesis"
+    )
     assert normalize_document_type("Dissertação") == "master_thesis"
     assert is_long_form_document("doctoral thesis") is True
     paper = Paper("", "A escrita do TCC e a formação universitária", document_type="article")

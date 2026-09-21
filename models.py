@@ -34,8 +34,10 @@ _DOCUMENT_TYPE_ALIASES = {
     "bachelorthesis": "bachelor_thesis",
     "bachelor thesis": "bachelor_thesis",
     "undergraduate thesis": "bachelor_thesis",
+    "tcc": "bachelor_thesis",
     "trabalho de conclusao de curso": "bachelor_thesis",
     "trabalho de conclusao": "bachelor_thesis",
+    "trabalho final de curso": "bachelor_thesis",
     "masterthesis": "master_thesis",
     "master thesis": "master_thesis",
     "masters thesis": "master_thesis",
@@ -108,6 +110,11 @@ def normalize_document_type(value: Any) -> str | None:
         return _DOCUMENT_TYPE_ALIASES[normalized]
     if compact in _DOCUMENT_TYPE_ALIASES:
         return _DOCUMENT_TYPE_ALIASES[compact]
+    if normalized == "tcc" or any(
+        marker in normalized
+        for marker in ("trabalho de conclusao", "trabalho final de curso")
+    ):
+        return "bachelor_thesis"
     if "bachelor" in normalized and "thesis" in normalized:
         return "bachelor_thesis"
     if ("master" in normalized or "dissert" in normalized) and (
