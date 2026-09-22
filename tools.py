@@ -17,6 +17,7 @@ try:
     from .clients.link_validator import LinkValidator
     from .clients.oasisbr import OasisbrClient
     from .clients.openalex import OpenAlexClient
+    from .clients.openaire import OpenAIREClient
     from .clients.repositories import RepositoryResolver
     from .clients.semantic_scholar import SemanticScholarClient
     from .clients.unpaywall import UnpaywallClient
@@ -29,7 +30,7 @@ try:
         merge_papers,
         normalize_doi,
     )
-    from .querying import expand_plugin_queries
+    from .querying import expand_plugin_queries, infer_document_type, infer_technical_focus
     from .routing import SearchRouter
     from .ranking import (
         application_context_signal,
@@ -58,13 +59,14 @@ except ImportError:  # pragma: no cover - direct module imports
     from clients.link_validator import LinkValidator
     from clients.oasisbr import OasisbrClient
     from clients.openalex import OpenAlexClient
+    from clients.openaire import OpenAIREClient
     from clients.repositories import RepositoryResolver
     from clients.semantic_scholar import SemanticScholarClient
     from clients.unpaywall import UnpaywallClient
     from citations import format_abnt, format_bibtex
     from config import ResearchConfig, config_from_context
     from models import Paper, deduplicate_papers, is_long_form_document, merge_papers, normalize_doi
-    from querying import expand_plugin_queries
+    from querying import expand_plugin_queries, infer_document_type, infer_technical_focus
     from routing import SearchRouter
     from ranking import RANKING_VERSION, application_context_signal, filter_relevant_papers, is_electric_vehicle_paper, rank_papers, technical_relevance_signal
     from schemas import (
@@ -82,7 +84,7 @@ except ImportError:  # pragma: no cover - direct module imports
 
 
 logger = logging.getLogger(__name__)
-SEARCH_ALGORITHM_VERSION = f"ranking-{RANKING_VERSION}-verified-pdf-2"
+SEARCH_ALGORITHM_VERSION = f"ranking-{RANKING_VERSION}-verified-pdf-3"
 
 
 def _cache_key(queries: list[str], filters: Mapping[str, Any]) -> str:
@@ -129,6 +131,10 @@ class ResearchService:
                 ),
                 "openalex": OpenAlexClient(
                     api_key=self.config.openalex_api_key,
+                    timeout=self.config.request_timeout_seconds,
+                    max_retries=self.config.max_retries,
+                ),
+                "openaire": OpenAIREClient(
                     timeout=self.config.request_timeout_seconds,
                     max_retries=self.config.max_retries,
                 ),
@@ -311,13 +317,24 @@ class ResearchService:
             for paper in ordered
             if paper.access_status == "verified_pdf" and paper.full_text_url
         ]
+        # Recheck the highest-ranked cached links. A prior verification is not
+        # proof that a repository still serves the PDF today.
+        already_verified = already_verified[: max(6, limit * 2)]
+        self._validate_papers(already_verified)
+        already_verified = [
+            paper for paper in already_verified
+            if paper.access_status == "verified_pdf" and paper.full_text_url
+        ]
         if len(already_verified) >= limit:
             return already_verified[:limit], 0
         # Work in small ordered batches and stop as soon as the final count is
         # filled. This bounds network work for WhatsApp while preserving the
         # long-form-first policy.
-        candidate_window = ordered[: min(len(ordered), max(12, limit * 4))]
-        usable: list[Paper] = []
+        candidate_window = [
+            paper for paper in ordered
+            if paper.access_status != "verified_pdf"
+        ][: max(12, limit * 4)]
+        usable: list[Paper] = list(already_verified)
         attempted = 0
         for offset in range(0, len(candidate_window), 4):
             if deadline is not None and time.monotonic() >= deadline:
@@ -374,6 +391,8 @@ class ResearchService:
             for paper in candidate_window[:attempted]
             if paper.internal_id not in usable_ids
         )
+        order = {paper.internal_id: index for index, paper in enumerate(ordered)}
+        usable.sort(key=lambda paper: order.get(paper.internal_id, len(ordered)))
         return usable[:limit], rejected
 
     def _source_info(self, source: str, client: Any) -> dict[str, Any]:
@@ -381,6 +400,7 @@ class ResearchService:
             "oasisbr": "primary_long_form_discovery",
             "bdtd": "long_form_fallback",
             "openalex": "global_discovery",
+            "openaire": "global_open_repository_discovery",
             "semantic_scholar": "global_fallback_and_enrichment",
             "crossref": "doi_metadata_enrichment_only",
         }
@@ -512,6 +532,7 @@ class ResearchService:
                 "document_preference": filters.get(
                     "document_preference", "long_form_first"
                 ),
+                "document_type": filters.get("document_type", "any"),
             },
             "more_available": max(0, total_found - len(papers)),
         }
@@ -534,6 +555,7 @@ class ResearchService:
         year_from: int | None = None,
         year_to: int | None = None,
         document_preference: str = "long_form_first",
+        document_type: str | None = None,
         exclude_electric_vehicles: bool = True,
         technical_focus: str | None = None,
         original_query: str | None = None,
@@ -545,10 +567,18 @@ class ResearchService:
         baja_context: bool | None = None,
     ) -> dict[str, Any]:
         search_deadline = time.monotonic() + self.config.global_timeout_seconds
+        technical_focus = technical_focus or infer_technical_focus(
+            original_query or " ".join(queries)
+        ) or queries[0]
+        document_type = document_type or infer_document_type(
+            " ".join([original_query or "", *queries])
+        )
         if document_preference not in {"long_form_first", "articles_first"}:
             raise ValueError(
                 "document_preference must be 'long_form_first' or 'articles_first'"
             )
+        if document_type not in {"any", "bachelor_thesis", "long_form", "articles"}:
+            raise ValueError("invalid document_type")
         prefer_long_form = (
             bool(prefer_theses)
             if prefer_theses is not None
@@ -571,6 +601,7 @@ class ResearchService:
             "document_preference": (
                 "long_form_first" if prefer_long_form else "articles_first"
             ),
+            "document_type": document_type,
             "baja_context_required": True,
             "exclude_electric_vehicles": exclude_electric_vehicles,
             "technical_focus": technical_focus or queries[0],
@@ -613,6 +644,7 @@ class ResearchService:
             year_from=year_from,
             year_to=year_to,
             prefer_long_form=prefer_long_form,
+            document_type=document_type,
         )
         all_papers = [paper for result in source_results if result.error is None for paper in result.papers]
         filtered_papers, filter_counts = self._filter_search_candidates(
@@ -636,6 +668,32 @@ class ResearchService:
                 ]
             )
         focus = (technical_focus or queries[0]).strip()
+        # The persistent paper cache is a metadata source too: reconcile known
+        # PDFs before making slow landing-page/DSpace requests.
+        unique = deduplicate_papers(self.storage.upsert_papers(unique))
+        if document_type != "any":
+            before_type_filter = len(unique)
+            if document_type == "bachelor_thesis":
+                unique = [paper for paper in unique if paper.document_type == "bachelor_thesis"]
+            elif document_type == "long_form":
+                unique = [paper for paper in unique if is_long_form_document(paper.document_type)]
+            else:
+                unique = [paper for paper in unique if paper.document_type in {"journal_article", "conference_paper", "article"}]
+            filter_counts["wrong_document_type"] = before_type_filter - len(unique)
+        previously_relevant, _ = filter_relevant_papers(
+            unique, focus, effective_queries, require_context=True
+        )
+        previous_verified = [
+            paper for paper in previously_relevant
+            if paper.access_status == "verified_pdf" and paper.full_text_url
+        ]
+        previous_verified = previous_verified[: max(6, limit * 2)]
+        self._validate_papers(previous_verified)
+        repository_verified = sum(
+            paper.access_status == "verified_pdf" and bool(paper.full_text_url)
+            for paper in previous_verified
+        )
+        relevant_ids = {paper.internal_id for paper in previously_relevant}
         repository_candidates = sorted(
             (
                 paper
@@ -643,16 +701,18 @@ class ResearchService:
                 if set(paper.sources) & {"oasisbr", "bdtd"}
             ),
             key=lambda paper: (
+                -int(paper.internal_id in relevant_ids),
                 -technical_relevance_signal(paper, focus, effective_queries),
                 -application_context_signal(paper),
                 -int(is_long_form_document(paper.document_type)),
                 paper.title.casefold(),
             ),
         )[: max(limit * 2, 6)]
-        repository_verified = 0
         for paper in repository_candidates:
-            if time.monotonic() >= search_deadline:
+            if repository_verified >= limit or time.monotonic() >= search_deadline:
                 break
+            if paper.access_status == "verified_pdf" and paper.full_text_url:
+                continue
             try:
                 self.repository_resolver.resolve(paper)
             except Exception:
@@ -706,6 +766,10 @@ class ResearchService:
         )
         filter_counts["unverified_open_access"] = rejected_links
         final = self.storage.upsert_papers(final)
+        verified_found = sum(
+            paper.access_status == "verified_pdf" and bool(paper.full_text_url)
+            for paper in ranked
+        )
         filter_warnings: list[str] = []
         if filter_counts["electric_vehicle"]:
             filter_warnings.append(
@@ -719,6 +783,10 @@ class ResearchService:
             filter_warnings.append(
                 f"{filter_counts['missing_baja_context']} resultado(s) foram excluídos por não ter contexto Baja/Formula/off-road suficiente."
             )
+        if filter_counts.get("wrong_document_type"):
+            filter_warnings.append(
+                f"{filter_counts['wrong_document_type']} resultado(s) foram excluídos por não corresponder ao tipo de trabalho pedido."
+            )
         if filter_counts["unverified_open_access"]:
             filter_warnings.append(
                 f"{filter_counts['unverified_open_access']} resultado(s) open access foram descartados porque o link de acesso não pôde ser verificado."
@@ -731,20 +799,21 @@ class ResearchService:
             filter_warnings.append(
                 f"Apenas {len(final)} trabalho(s) atenderam simultaneamente aos critérios de tema, contexto Baja e PDF gratuito verificado."
             )
-        self.storage.save_search(
-            cache_key=key,
-            original_query=original_query,
-            expanded_queries=effective_queries,
-            filters=filters,
-            papers=final,
-            source_status=statuses,
-            total_found=len(unique),
-            diagnostics={
-                "filter_counts": filter_counts,
-                "filter_warnings": filter_warnings,
-            },
-            algorithm_version=SEARCH_ALGORITHM_VERSION,
-        )
+        if final:
+            self.storage.save_search(
+                cache_key=key,
+                original_query=original_query,
+                expanded_queries=effective_queries,
+                filters=filters,
+                papers=final,
+                source_status=statuses,
+                total_found=verified_found,
+                diagnostics={
+                    "filter_counts": filter_counts,
+                    "filter_warnings": filter_warnings,
+                },
+                algorithm_version=SEARCH_ALGORITHM_VERSION,
+            )
         logger.info(
             "event=academic_search cache=miss queries=%d unique_results=%d returned=%d",
             len(effective_queries),
@@ -755,7 +824,7 @@ class ResearchService:
             queries=effective_queries,
             filters=filters,
             papers=final,
-            total_found=len(unique),
+            total_found=verified_found,
             statuses=statuses,
             cache_hit=False,
             filter_counts=filter_counts,

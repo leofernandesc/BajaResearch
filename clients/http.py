@@ -14,7 +14,7 @@ from .base import SourceError
 
 logger = logging.getLogger(__name__)
 
-USER_AGENT = "BAJA-Research/0.2.0 (https://github.com/leofernandesc/BajaResearch)"
+USER_AGENT = "BAJA-Research/0.3.0 (https://github.com/leofernandesc/BajaResearch)"
 
 
 def _retry_after(headers: Mapping[str, Any]) -> float | None:

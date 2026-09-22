@@ -13,14 +13,29 @@ from typing import Any, Iterable, Mapping
 
 try:
     from .clients.base import SourceResult, timed_call
-    from .models import Paper, is_long_form_document
+    from .models import Paper, is_long_form_document, normalize_title
 except ImportError:  # pragma: no cover
     from clients.base import SourceResult, timed_call
-    from models import Paper, is_long_form_document
+    from models import Paper, is_long_form_document, normalize_title
 
 
 logger = logging.getLogger(__name__)
-ROUTER_VERSION = "2"
+ROUTER_VERSION = "3"
+
+_PORTUGUESE_TOPIC_WORDS = {
+    "suspensao", "chassi", "eletronica", "telemetria", "freios", "freio",
+    "direcao", "transmissao", "ergonomia", "manufatura", "soldagem",
+    "aquisicao", "amortecedor", "potencia", "estrutura",
+}
+_ENGLISH_TOPIC_WORDS = {
+    "suspension", "chassis", "electronics", "telemetry", "brakes",
+    "brake", "steering", "transmission", "ergonomics", "manufacturing",
+    "welding", "acquisition", "powertrain", "structure",
+}
+_RETRIEVAL_NOISE = {
+    "pdf", "repository", "repositorio", "institutional", "thesis", "tcc",
+    "undergraduate", "monograph", "monografia", "dissertation",
+}
 
 
 @dataclass
@@ -265,6 +280,20 @@ class SearchRouter:
 
         return sorted(dict.fromkeys(queries), key=score, reverse=True)
 
+    @staticmethod
+    def _preferred_query(queries: list[str], *, repository: bool) -> str:
+        """Select a concise language-appropriate query for one API request."""
+        def priority(query: str) -> tuple[int, int, int, int, int]:
+            words = set(normalize_title(query).split())
+            desired = _PORTUGUESE_TOPIC_WORDS if repository else _ENGLISH_TOPIC_WORDS
+            other = _ENGLISH_TOPIC_WORDS if repository else _PORTUGUESE_TOPIC_WORDS
+            contextual = int("baja" in words and "sae" in words)
+            language = 2 * int(bool(words & desired)) - int(bool(words & other))
+            noise = len(words & _RETRIEVAL_NOISE) + int('"' in query)
+            return (contextual, language, -noise, -len(words), -len(query))
+
+        return max(queries, key=priority)
+
     def search(
         self,
         *,
@@ -273,10 +302,11 @@ class SearchRouter:
         year_from: int | None,
         year_to: int | None,
         prefer_long_form: bool,
+        document_type: str = "any",
     ) -> list[SourceResult]:
         started = time.monotonic()
         deadline = started + self.global_timeout_seconds
-        source_limit = max(8, min(40, limit * 4))
+        source_limit = max(20, min(40, limit * 8))
         filters = {
             "source_limit": source_limit,
             "year_from": year_from,
@@ -288,9 +318,9 @@ class SearchRouter:
         # One query per keyless endpoint avoids the burst behavior that causes
         # 429/503 responses. Different sources still cover complementary query
         # variants, and each source/query result has its own cache.
-        repository_queries = prioritized[:1]
-        bdtd_queries = prioritized[1:2] or repository_queries
-        global_queries = prioritized[:1]
+        repository_queries = [self._preferred_query(prioritized, repository=True)]
+        bdtd_queries = repository_queries
+        global_queries = [self._preferred_query(prioritized, repository=False)]
 
         oasis_deadline = min(deadline, time.monotonic() + 5.0)
         results.extend(
@@ -305,7 +335,11 @@ class SearchRouter:
             is_long_form_document(paper.document_type)
             for paper in self._papers(results)
         )
-        if prefer_long_form and long_form_count < max(limit * 2, 6):
+        if (
+            prefer_long_form
+            and document_type != "bachelor_thesis"
+            and long_form_count < max(limit * 2, 6)
+        ):
             bdtd_deadline = min(deadline, time.monotonic() + 4.0)
             results.extend(
                 self._stage(
@@ -319,7 +353,7 @@ class SearchRouter:
         openalex_deadline = min(deadline, time.monotonic() + 6.0)
         results.extend(
             self._stage(
-                ["openalex"], global_queries, filters=filters, deadline=openalex_deadline
+                ["openalex", "openaire"], global_queries, filters=filters, deadline=openalex_deadline
             )
         )
         usable_count = len(self._papers(results))

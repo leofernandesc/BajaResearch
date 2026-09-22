@@ -1,7 +1,7 @@
 ---
 name: baja-research
 description: "Find free, verified, technically relevant academic work for Baja SAE teams."
-version: 0.2.0
+version: 0.3.0
 author: Leonardo Fernandes Cavalcante
 license: MIT
 metadata:
@@ -13,7 +13,10 @@ metadata:
 
 Use this skill whenever the user asks for papers, TCCs, monographs, theses,
 dissertations, academic literature, technical references, related work, or a
-bibliography for a Baja SAE problem. This is an evidence-backed academic
+bibliography for an engineering/team problem. Baja SAE context is implicit even
+when the user only says "3 TCCs sobre suspensão" or "artigos de eletrônica".
+Do not ask the user to type "Baja", "gratuito", "PDF completo" or "verificado".
+This is an evidence-backed academic
 search workflow, not a general web search.
 
 ## Non-negotiable policy
@@ -40,19 +43,22 @@ search workflow, not a general web search.
 
 1. Identify the technical area, phenomenon or problem, vehicle application,
    and useful academic vocabulary in the user's request.
-2. Create a short `technical_focus` that contains the actual subject without
+2. Optionally create a short `technical_focus` that contains the actual subject without
    generic context words. Examples: `suspension geometry optimization`,
    `chassis fatigue finite element analysis`, or
    `telemetry data acquisition sensors CAN`.
-3. Build approximately three to five complementary queries. Use English
+3. Build a few complementary queries when useful. A single short query is valid:
+   the plugin adds concise Baja/Portuguese/English variants automatically. Use English
    technical terminology when useful, but include Portuguese repository terms
    when they can retrieve Brazilian TCCs. Start narrow and broaden carefully:
    Baja SAE or Mini Baja, then Formula SAE/Formula Student, ATV/off-road, and
    finally the relevant vehicle-engineering domain. Do not broaden away from
    the requested technical focus.
-4. Call `search_academic_papers` once with the complete query list,
-   `technical_focus`, the requested final `limit`, and
-   `document_preference=long_form_first`. The limit is the final number of
+4. Call `search_academic_papers` once with the query list and requested final
+   `limit`. `technical_focus` is optional. When the user explicitly asks for
+   TCCs, set `document_type=bachelor_thesis`; for articles, set
+   `document_type=articles`. The plugin also infers these from the query.
+   The limit is the final number of
    recommendations, not the number requested from each source.
 5. Use `document_preference=articles_first` only when the user explicitly
    prioritizes articles. Keep `exclude_electric_vehicles=true` unless the user

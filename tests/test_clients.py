@@ -6,6 +6,7 @@ from clients.crossref import CrossrefClient
 from clients.http import JsonHttpClient
 from clients.link_validator import AccessCheck, LinkValidator
 from clients.openalex import OpenAlexClient
+from clients.openaire import OpenAIREClient
 from clients.oasisbr import OasisbrClient
 from clients.repositories import RepositoryResolver
 from clients.semantic_scholar import SemanticScholarClient
@@ -73,6 +74,46 @@ def test_openalex_normalizes_work_payload():
     assert paper.abstract == "A useful abstract"
     assert paper.open_access_url.endswith(".pdf")
     assert paper.source_scores["openalex"] == 2 / 3
+
+
+def test_openaire_extracts_repository_thesis_and_direct_pdf():
+    def handler(request):
+        assert request.url.path == "/graph/v3/research-products"
+        assert request.url.params["search"] == "Baja SAE suspension"
+        return httpx.Response(200, json={"results": [{
+            "id": "openaire-1",
+            "mainTitle": "Projeto de suspensão Baja SAE",
+            "publicationDate": "2021-12-10",
+            "authors": [{"fullName": "Ana Silva"}],
+            "descriptions": ["<p>Estudo da suspensão</p>"],
+            "pids": [{"scheme": "doi", "value": "https://doi.org/10.1000/baja"}],
+            "instances": [{
+                "type": "Bachelor thesis",
+                "urls": ["https://repo.example/handle/123", "https://repo.example/bitstream/123/1/tcc.pdf"],
+            }],
+            "indicators": {"citationImpact": {"citationCount": 2}},
+        }]}, request=request)
+
+    raw = JsonHttpClient("https://api.openaire.eu/graph/v3", "openaire", http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    paper = OpenAIREClient(http=raw).search("Baja SAE suspension", limit=3)[0]
+    assert paper.document_type == "bachelor_thesis"
+    assert paper.year == 2021
+    assert paper.doi == "10.1000/baja"
+    assert paper.authors == ["Ana Silva"]
+    assert paper.abstract == "Estudo da suspensão"
+    assert paper.open_access_url == "https://repo.example/bitstream/123/1/tcc.pdf"
+    assert paper.access_status != "verified_pdf"  # A URL hint is not proof.
+
+
+def test_openaire_doi_lookup_checks_exact_identifier():
+    def handler(request):
+        return httpx.Response(200, json={"results": [
+            {"mainTitle": "Wrong work", "pids": [{"scheme": "doi", "value": "10.1000/other"}]},
+            {"mainTitle": "Right work", "pids": [{"scheme": "doi", "value": "10.1000/right"}]},
+        ]}, request=request)
+
+    raw = JsonHttpClient("https://api.openaire.eu/graph/v3", "openaire", http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert OpenAIREClient(http=raw).get("10.1000/right").title == "Right work"
 
 
 def test_semantic_scholar_uses_optional_api_key_header():
@@ -445,6 +486,28 @@ def test_pdf_verifier_rejects_html_mislabeled_as_pdf():
         client.close()
     assert result.status == "invalid"
     assert result.reason == "response_is_not_pdf"
+
+
+def test_legacy_mime_only_access_cache_is_rechecked(tmp_path):
+    url = "https://repository.example/document.pdf"
+    storage = ResearchStorage(tmp_path / "research.sqlite3")
+    storage.save_access_check(AccessCheck(
+        "verified_pdf", url, evidence={"method": "streamed_get_pdf_content_type", "pdf_magic": False}
+    ).to_dict())
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        return httpx.Response(200, headers={"Content-Type": "application/pdf"}, content=b"<html>paywall</html>", request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    verifier = LinkValidator(http_client=client, resolver=lambda _host, _port: ["8.8.8.8"], storage=storage)
+    try:
+        result = verifier.check(url)
+    finally:
+        client.close()
+    assert calls == [url]
+    assert result.status == "invalid"
 
 
 def test_pdf_verifier_blocks_private_redirect_target():

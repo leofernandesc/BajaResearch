@@ -6,8 +6,10 @@ from typing import Any, Mapping
 
 try:
     from .models import normalize_doi, normalize_title
+    from .querying import infer_document_type, infer_technical_focus
 except ImportError:  # pragma: no cover - direct test imports
     from models import normalize_doi, normalize_title
+    from querying import infer_document_type, infer_technical_focus
 
 
 SEARCH_SCHEMA = {
@@ -26,7 +28,12 @@ SEARCH_SCHEMA = {
             "technical_focus": {
                 "type": "string",
                 "minLength": 2,
-                "description": "Explicit engineering or management focus, without generic Baja context; for example 'suspension geometry optimization' or 'telemetry data acquisition sensors CAN'.",
+                "description": "Optional technical focus. Inferred from queries when omitted; Baja SAE and verified free PDF are always implicit.",
+            },
+            "document_type": {
+                "type": "string",
+                "enum": ["any", "bachelor_thesis", "long_form", "articles"],
+                "description": "Optional strict type filter. TCC requests imply bachelor_thesis; article requests imply articles. No filter otherwise.",
             },
             "limit": {
                 "type": "integer",
@@ -51,7 +58,7 @@ SEARCH_SCHEMA = {
             "original_query": {"type": ["string", "null"], "description": "The user's original question, when useful for diagnostics."},
             "refresh_cache": {"type": "boolean", "default": False, "description": "Ignore a fresh identical search cache entry."},
         },
-        "required": ["queries", "technical_focus"],
+        "required": ["queries"],
         "additionalProperties": False,
     },
 }
@@ -128,6 +135,10 @@ def validate_search_args(args: Mapping[str, Any]) -> dict[str, Any]:
     if len(queries) > 8:
         raise ValueError("queries accepts at most 8 items")
     technical_focus = args.get("technical_focus")
+    if technical_focus is None:
+        technical_focus = infer_technical_focus(
+            str(args.get("original_query") or " ".join(queries))
+        )
     if not isinstance(technical_focus, str) or len(technical_focus.strip()) < 2:
         raise ValueError("technical_focus must be a non-empty technical description")
     limit = args.get("limit", 5)
@@ -159,9 +170,15 @@ def validate_search_args(args: Mapping[str, Any]) -> dict[str, Any]:
     original_query = args.get("original_query")
     if original_query is not None and not isinstance(original_query, str):
         raise ValueError("original_query must be a string when supplied")
+    document_type = args.get("document_type")
+    if document_type is None:
+        document_type = infer_document_type(" ".join([original_query or "", *queries]))
+    if document_type not in {"any", "bachelor_thesis", "long_form", "articles"}:
+        raise ValueError("document_type must be any, bachelor_thesis, long_form or articles")
     return {
         "queries": queries,
         "technical_focus": technical_focus.strip(),
+        "document_type": document_type,
         "limit": limit,
         "year_from": year_from,
         "year_to": year_to,

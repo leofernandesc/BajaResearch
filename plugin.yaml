@@ -1,5 +1,5 @@
 name: baja-research
-version: 0.2.0
+version: 0.3.0
 description: "Verified free academic literature for Baja SAE engineering and project-management work."
 author: "Leonardo Fernandes Cavalcante"
 kind: standalone
@@ -18,6 +18,8 @@ provides_tools:
   - find_related_papers
   - format_citation
   - research_cache_stats
+provides_hooks:
+  - pre_llm_call
 python_dependencies:
   - "httpx>=0.27,<1"
 config_schema:

@@ -161,6 +161,10 @@ class PdfAccessVerifier:
         if value is None:
             return None
         result = AccessCheck.from_dict(value)
+        # Older versions accepted a PDF MIME header without PDF bytes. Such
+        # entries must be rechecked under the stricter policy.
+        if result.status == "verified_pdf" and not result.evidence.get("pdf_magic"):
+            return None
         self._cache[url] = result
         return result
 
@@ -267,8 +271,7 @@ class PdfAccessVerifier:
                         if len(sample) >= self.sample_bytes:
                             break
                     pdf_magic = bytes(sample).lstrip().startswith(b"%PDF-")
-                    pdf_content_type = content_type == "application/pdf" or content_type.endswith("+pdf")
-                    if not (pdf_magic or pdf_content_type):
+                    if not pdf_magic:
                         return self._store(
                             AccessCheck(
                                 "invalid",
@@ -284,11 +287,6 @@ class PdfAccessVerifier:
                                 },
                             )
                         )
-                    method = (
-                        "streamed_get_pdf_magic"
-                        if pdf_magic
-                        else "streamed_get_pdf_content_type"
-                    )
                     return self._store(
                         AccessCheck(
                             "verified_pdf",
@@ -297,7 +295,7 @@ class PdfAccessVerifier:
                             http_status=status_code,
                             content_type=content_type or None,
                             evidence={
-                                "method": method,
+                                "method": "streamed_get_pdf_magic",
                                 "redirects": redirects,
                                 "bytes_sampled": len(sample),
                                 "pdf_magic": pdf_magic,

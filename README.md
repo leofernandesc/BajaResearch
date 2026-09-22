@@ -1,7 +1,7 @@
 # BAJA Research
 
 BAJA Research é um plugin standalone para o Hermes Agent que encontra
-literatura acadêmica aplicável a equipes Baja SAE. A versão 0.2 foi desenhada
+literatura acadêmica aplicável a equipes Baja SAE. A versão 0.3 foi desenhada
 para uso local no terminal e no WhatsApp self-chat, com prioridade para TCCs,
 monografias, dissertações e teses extensas.
 
@@ -19,8 +19,12 @@ Um trabalho só é recomendado quando satisfaz simultaneamente estes critérios:
 - não é centrado em veículo elétrico, híbrido ou célula a combustível, salvo
   quando esse assunto for pedido explicitamente;
 - possui texto completo gratuito em PDF;
-- o plugin conseguiu abrir esse PDF anonimamente e confirmou MIME de PDF ou o
-  prefixo real `%PDF-`.
+- o plugin conseguiu abrir esse PDF anonimamente e confirmou o prefixo real
+  `%PDF-` nos bytes recebidos, não apenas o MIME.
+
+O usuário não precisa escrever "Baja", "PDF completo" ou "gratuito" no pedido.
+Exemplo suficiente: `Busque 3 TCCs sobre suspensão`. Nesse caso, o tipo TCC
+também é obrigatório: dissertações não ocupam suas vagas.
 
 DOI, selo open access, página de editora, landing page de repositório e HTTP
 200 não são prova suficiente de acesso gratuito. O plugin retorna menos
@@ -36,13 +40,13 @@ adequada para este fluxo.
 ```text
 Hermes chat / gateway / WhatsApp self-chat
                     |
-          skill + 5 ferramentas
+     skill + hook + 5 ferramentas
                     |
               SearchRouter
        +------------+-------------+
        |            |             |
- Oasisbr/BDTD    OpenAlex    Semantic Scholar
-  TCCs/teses      global        fallback
+ Oasisbr/BDTD    OpenAlex/OpenAIRE    Semantic Scholar
+  TCCs/teses       global/repos       fallback
        +------------+-------------+
                     |
         Crossref: metadados por DOI
@@ -56,7 +60,8 @@ Hermes chat / gateway / WhatsApp self-chat
 ```
 
 Na versão local verificada, Hermes Agent v0.20.6, a API pública usada é
-`register(ctx)`, `ctx.register_tool(...)`, `ctx.register_skill(...)` e
+`register(ctx)`, `ctx.register_tool(...)`, `ctx.register_skill(...)`,
+`ctx.register_hook("pre_llm_call", ...)` e
 `ctx.state.data_dir`. Essa versão não expõe `plugin_db()` para o plugin; por
 isso, o SQLite fica no diretório persistente fornecido pelo Hermes, nunca no
 diretório instalável.
@@ -81,12 +86,14 @@ As cinco ferramentas são:
    cobertura suficiente.
 3. **OpenAlex**: descoberta acadêmica global, incluindo artigos e metadados de
    acesso aberto.
-4. **Semantic Scholar**: fallback global, citações, enriquecimento e trabalhos
+4. **OpenAIRE**: complemento global de repositórios, com teses/dissertações e
+   links candidatos para PDFs; cada link passa pela mesma checagem de bytes.
+5. **Semantic Scholar**: fallback global, citações, enriquecimento e trabalhos
    relacionados. Uma chave opcional reduz limitações de uso.
-5. **Crossref**: resolução e enriquecimento bibliográfico por DOI. Não é usado
+6. **Crossref**: resolução e enriquecimento bibliográfico por DOI. Não é usado
    como fonte primária de candidatos, pois licença ou link da editora não
    garantem PDF gratuito.
-6. **Unpaywall**: resolvedor opcional de cópias abertas por DOI. Toda URL ainda
+7. **Unpaywall**: resolvedor opcional de cópias abertas por DOI. Toda URL ainda
    passa pela verificação real de PDF.
 
 O resolvedor de repositórios conhece DSpace 6 e DSpace 7 e usa OAI-PMH/METS/ORE
@@ -182,7 +189,7 @@ BAJA_RESEARCH_GLOBAL_TIMEOUT_SECONDS=25
 BAJA_RESEARCH_MAX_RETRIES=1
 BAJA_RESEARCH_CIRCUIT_BREAKER_SECONDS=60
 BAJA_RESEARCH_ACCESS_TIMEOUT_SECONDS=5
-BAJA_RESEARCH_ACCESS_VALID_TTL_HOURS=168
+BAJA_RESEARCH_ACCESS_VALID_TTL_HOURS=1
 BAJA_RESEARCH_ACCESS_INVALID_TTL_HOURS=24
 BAJA_RESEARCH_ACCESS_TEMPORARY_TTL_HOURS=1
 ```
@@ -192,7 +199,7 @@ BAJA_RESEARCH_ACCESS_TEMPORARY_TTL_HOURS=1
 - `CROSSREF_MAILTO`: opcional e recomendado para identificar o cliente no
   pool educado da Crossref.
 - `UNPAYWALL_EMAIL`: opcional; habilita a procura de cópia aberta por DOI.
-- TTLs de acesso: PDFs válidos ficam sete dias em cache, links inválidos um
+- TTLs de acesso: PDFs válidos ficam uma hora em cache, links inválidos um
   dia e falhas temporárias uma hora.
 
 As chaves nunca são registradas nos logs. O plugin também não lê a pasta de
@@ -215,10 +222,15 @@ falso, foco técnico incorreto e EV em ordem invertida.
 ## Smoke test real
 
 O smoke test usa as APIs públicas e um SQLite local ignorado pelo Git. A opção
-`--query` pode ser repetida; `--technical-focus` alimenta o gate temático.
+`--query` pode ser repetida; foco, tipo TCC/artigo e contexto Baja são
+inferidos quando omitidos. Use `--refresh-cache` para forçar chamadas reais.
 
 ```bash
 cd /home/leofernandesc/BajaResearch
+
+.venv/bin/python smoke_test.py \
+  --query "3 TCCs sobre suspensão" \
+  --limit 3
 
 .venv/bin/python smoke_test.py \
   --query "Baja SAE suspension optimization" \
@@ -256,12 +268,14 @@ Execute:
 ```bash
 hermes chat \
   -s baja-research:baja-research \
-  -q "Busque 3 trabalhos extensos sobre otimização de suspensão em Baja SAE e veículos off-road. Priorize TCCs e informe qualquer fonte indisponível."
+  -q "Busque 3 TCCs sobre suspensão"
 ```
 
-A skill instrui o Hermes a produzir de três a cinco consultas complementares,
-definir o foco técnico, responder no idioma do usuário e nunca completar
-metadados de memória. No WhatsApp, a resposta lista no máximo cinco trabalhos
+A skill e o hook ajudam o Hermes a usar a ferramenta em uma chamada inicial,
+responder no idioma do usuário e nunca completar metadados de memória. O
+plugin insere o contexto Baja, escolhe consultas curtas em português/inglês e
+exige PDF completo gratuito verificado mesmo quando o pedido não diz isso.
+No WhatsApp, a resposta lista no máximo cinco trabalhos
 por padrão; a ferramenta aceita um limite final entre 1 e 20.
 
 Para um teste de eletrônica que preserve a aplicação correta:
@@ -269,7 +283,7 @@ Para um teste de eletrônica que preserve a aplicação correta:
 ```bash
 hermes chat \
   -s baja-research:baja-research \
-  -q "Busque 3 TCCs ou dissertações sobre telemetria, aquisição de dados e sensores em Baja SAE ou veículos off-road."
+  -q "Busque 3 TCCs sobre telemetria e aquisição de dados"
 ```
 
 ## WhatsApp self-chat
@@ -298,7 +312,7 @@ Hermes.
 5. Envie uma mensagem para a conversa com você mesmo:
 
    ```text
-   Use o BAJA Research para buscar 3 TCCs, dissertações ou trabalhos extensos sobre otimização de suspensão em Baja SAE e veículos off-road. Todos devem ter PDF completo gratuito e verificado. Informe fontes indisponíveis.
+   Busque 3 TCCs sobre suspensão
    ```
 
 A resposta correta contém links diretos em `full_text_url`, não links de
@@ -344,7 +358,7 @@ de ranking e disponibilidade observada das fontes.
   ou redirect inseguro não comprovam acesso anônimo estável. O plugin não
   apresenta esse link como gratuito.
 - **Resultado antigo:** buscas finais e chamadas por fonte têm TTL de 24 horas.
-  O smoke test força atualização; a ferramenta aceita `refresh_cache=true`.
+Use `--refresh-cache` no smoke test ou `refresh_cache=true` na ferramenta.
 - **Diagnóstico do gateway:** use
   `journalctl --user -u hermes-gateway.service -n 100 --no-pager` sem copiar ou
   publicar credenciais e arquivos da sessão WhatsApp.
@@ -354,8 +368,10 @@ de ranking e disponibilidade observada das fontes.
 - O plugin verifica o acesso e os primeiros bytes do PDF, mas não interpreta o
   conteúdo integral; ainda não há processamento de PDFs ou RAG.
 - A cobertura de TCCs depende dos índices Oasisbr/BDTD e dos padrões DSpace
-  suportados. Repositórios com login, OAI-PMH indisponível ou endpoints
+  suportados, complementados pelo OpenAIRE. Repositórios com login, OAI-PMH indisponível ou endpoints
   desconhecidos são omitidos.
+- arXiv não foi adicionado como fonte prioritária: seu índice é mais útil
+  para preprints de artigos que para TCCs de repositórios institucionais.
 - Query expansion continua principalmente sob responsabilidade do Hermes/LLM;
   o plugin adiciona somente salvaguardas de recuperação e aplica gates rígidos.
 - O ranking mede adequação à consulta, não qualidade metodológica definitiva.

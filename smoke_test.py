@@ -29,6 +29,15 @@ def main() -> int:
     parser.add_argument("--year-from", type=int)
     parser.add_argument("--year-to", type=int)
     parser.add_argument(
+        "--refresh-cache", action="store_true",
+        help="Force a live search rather than reuse a fresh identical search.",
+    )
+    parser.add_argument(
+        "--document-type",
+        choices=("any", "bachelor_thesis", "long_form", "articles"),
+        help="Strict work type; inferred from TCC/artigo query words when omitted.",
+    )
+    parser.add_argument(
         "--document-preference",
         choices=("long_form_first", "articles_first"),
         default="long_form_first",
@@ -46,21 +55,21 @@ def main() -> int:
     )
     args = parser.parse_args()
     queries = args.query or [DEFAULT_QUERY]
-    technical_focus = args.technical_focus or queries[0]
     service = ResearchService(
         config=ResearchConfig(),
-        storage=ResearchStorage(args.db, ttl_hours=0),
+        storage=ResearchStorage(args.db),
     )
     try:
         response = service.search(
             queries=queries,
-            technical_focus=technical_focus,
+            technical_focus=args.technical_focus,
+            document_type=args.document_type,
             limit=args.limit,
             year_from=args.year_from,
             year_to=args.year_to,
             document_preference=args.document_preference,
             exclude_electric_vehicles=not args.include_electric_vehicles,
-            refresh_cache=True,
+            refresh_cache=args.refresh_cache,
         )
     finally:
         service.close()

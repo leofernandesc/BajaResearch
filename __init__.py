@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .research_hooks import academic_request_context
 from .tools import ResearchService, build_tool_handlers
 
 
@@ -35,6 +36,7 @@ def register(ctx) -> None:
             "description": "Find and cite verified free academic work for Baja SAE.",
         },
     )
+    ctx.register_hook("pre_llm_call", academic_request_context)
     ctx.on_unload(service.close)
 
 

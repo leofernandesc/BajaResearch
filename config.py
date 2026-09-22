@@ -20,7 +20,7 @@ class ResearchConfig:
     crossref_mailto: str | None = None
     unpaywall_email: str | None = None
     access_timeout_seconds: float = 5.0
-    access_valid_ttl_hours: float = 168.0
+    access_valid_ttl_hours: float = 1.0
     access_invalid_ttl_hours: float = 24.0
     access_temporary_ttl_hours: float = 1.0
 
@@ -82,7 +82,7 @@ def config_from_context(ctx: Any) -> ResearchConfig:
             "BAJA_RESEARCH_ACCESS_TIMEOUT_SECONDS", 5.0
         ),
         access_valid_ttl_hours=_env_float(
-            "BAJA_RESEARCH_ACCESS_VALID_TTL_HOURS", 168.0
+            "BAJA_RESEARCH_ACCESS_VALID_TTL_HOURS", 1.0
         ),
         access_invalid_ttl_hours=_env_float(
             "BAJA_RESEARCH_ACCESS_INVALID_TTL_HOURS", 24.0
