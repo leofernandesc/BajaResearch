@@ -84,7 +84,7 @@ except ImportError:  # pragma: no cover - direct module imports
 
 
 logger = logging.getLogger(__name__)
-SEARCH_ALGORITHM_VERSION = f"ranking-{RANKING_VERSION}-verified-pdf-3"
+SEARCH_ALGORITHM_VERSION = f"ranking-{RANKING_VERSION}-adaptive-4"
 
 
 def _cache_key(queries: list[str], filters: Mapping[str, Any]) -> str:
@@ -305,9 +305,10 @@ class ResearchService:
         deadline: float | None = None,
     ) -> tuple[list[Paper], int]:
         """Select final results, validating OA URLs before recommendation."""
-        long_form = [paper for paper in ranked if is_long_form_document(paper.document_type)]
+        theses = [paper for paper in ranked if paper.document_type == "bachelor_thesis"]
+        long_form = [paper for paper in ranked if is_long_form_document(paper.document_type) and paper.document_type != "bachelor_thesis"]
         articles = [paper for paper in ranked if not is_long_form_document(paper.document_type)]
-        ordered = [*long_form, *articles] if prefer_long_form else [*articles, *long_form]
+        ordered = [*theses, *long_form, *articles] if prefer_long_form else [*articles, *theses, *long_form]
         if not open_access_only:
             final = ordered[:limit]
             self._validate_papers(final)
@@ -547,6 +548,79 @@ class ResearchService:
             }
         return response
 
+    def _rank_and_verify(
+        self,
+        source_results: list[SourceResult],
+        *,
+        focus: str,
+        queries: list[str],
+        limit: int,
+        document_type: str,
+        prefer_long_form: bool,
+        exclude_electric_vehicles: bool,
+        deadline: float,
+    ) -> tuple[list[Paper], list[Paper], dict[str, int]]:
+        """Only enrich likely matches; route fallback by verified yield."""
+        all_papers = [paper for result in source_results if result.error is None for paper in result.papers]
+        filtered, counts = self._filter_search_candidates(
+            all_papers, open_access_only=True,
+            exclude_electric_vehicles=exclude_electric_vehicles,
+        )
+        unique = deduplicate_papers(self.storage.upsert_papers(deduplicate_papers(filtered)))
+        # Repository metadata may be needed to classify a TCC or expose the
+        # Baja context. Do this before strict document/relevance filters.
+        possible, _ = filter_relevant_papers(unique, focus, queries, require_context=False)
+        candidate_ids = {paper.internal_id for paper in possible}
+        repository_candidates = sorted(
+            (paper for paper in unique if set(paper.sources) & {"oasisbr", "bdtd", "ufscar"}),
+            key=lambda paper: (
+                -int(paper.internal_id in candidate_ids),
+                -technical_relevance_signal(paper, focus, ()),
+                -application_context_signal(paper),
+                paper.title.casefold(),
+            ),
+        )[: max(limit * 2, 6)]
+        for paper in repository_candidates:
+            if time.monotonic() >= deadline:
+                break
+            if paper.access_status == "verified_pdf" and paper.full_text_url:
+                continue
+            if paper.candidate_full_text_urls() and paper.document_type and paper.abstract:
+                continue
+            try:
+                self.repository_resolver.resolve(paper)
+            except Exception:
+                logger.info("event=repository_resolution status=error paper_id=%s", paper.internal_id, exc_info=True)
+        unique = deduplicate_papers(unique)
+        before_type = len(unique)
+        if document_type == "bachelor_thesis":
+            unique = [paper for paper in unique if paper.document_type == "bachelor_thesis"]
+        elif document_type == "long_form":
+            unique = [paper for paper in unique if is_long_form_document(paper.document_type)]
+        elif document_type == "articles":
+            unique = [paper for paper in unique if paper.document_type in {"journal_article", "conference_paper", "article"}]
+        counts["wrong_document_type"] = before_type - len(unique)
+        relevant, relevance_counts = filter_relevant_papers(unique, focus, queries, require_context=True)
+        counts.update(relevance_counts)
+        if relevant:
+            enriched = self.router.enrich(relevant, limit=min(3, limit))
+            source_results.extend(enriched)
+            additions = [paper for result in enriched if result.error is None for paper in result.papers]
+            if additions:
+                relevant = deduplicate_papers([*relevant, *additions])
+                relevant, _ = filter_relevant_papers(relevant, focus, queries, require_context=True)
+        ranked = rank_papers(
+            self.storage.upsert_papers(relevant), queries, technical_focus=focus,
+            limit=None, prefer_theses=prefer_long_form, require_context=True,
+        )
+        final, rejected = self._select_final_papers(
+            ranked, limit=limit, open_access_only=True,
+            prefer_long_form=prefer_long_form, deadline=deadline,
+        )
+        counts["unverified_open_access"] = rejected
+        final = self.storage.upsert_papers(final)
+        return final, ranked, counts
+
     def search(
         self,
         *,
@@ -647,131 +721,37 @@ class ResearchService:
             year_to=year_to,
             prefer_long_form=prefer_long_form,
             document_type=document_type,
-        )
-        all_papers = [paper for result in source_results if result.error is None for paper in result.papers]
-        filtered_papers, filter_counts = self._filter_search_candidates(
-            all_papers,
-            open_access_only=True,
-            exclude_electric_vehicles=exclude_electric_vehicles,
-        )
-        unique = deduplicate_papers(filtered_papers)
-        enrichment_results = self.router.enrich(unique, limit=min(3, limit))
-        if enrichment_results:
-            source_results.extend(enrichment_results)
-            unique = deduplicate_papers(
-                [
-                    *unique,
-                    *[
-                        paper
-                        for result in enrichment_results
-                        if result.error is None
-                        for paper in result.papers
-                    ],
-                ]
-            )
-        focus = (technical_focus or queries[0]).strip()
-        # The persistent paper cache is a metadata source too: reconcile known
-        # PDFs before making slow landing-page/DSpace requests.
-        unique = deduplicate_papers(self.storage.upsert_papers(unique))
-        if document_type != "any":
-            before_type_filter = len(unique)
-            if document_type == "bachelor_thesis":
-                unique = [paper for paper in unique if paper.document_type == "bachelor_thesis"]
-            elif document_type == "long_form":
-                unique = [paper for paper in unique if is_long_form_document(paper.document_type)]
-            else:
-                unique = [paper for paper in unique if paper.document_type in {"journal_article", "conference_paper", "article"}]
-            filter_counts["wrong_document_type"] = before_type_filter - len(unique)
-        previously_relevant, _ = filter_relevant_papers(
-            unique, focus, effective_queries, require_context=True
-        )
-        previous_verified = [
-            paper for paper in previously_relevant
-            if paper.access_status == "verified_pdf" and paper.full_text_url
-        ]
-        previous_verified = previous_verified[: max(6, limit * 2)]
-        self._validate_papers(previous_verified)
-        repository_verified = sum(
-            paper.access_status == "verified_pdf" and bool(paper.full_text_url)
-            for paper in previous_verified
-        )
-        relevant_ids = {paper.internal_id for paper in previously_relevant}
-        repository_candidates = sorted(
-            (
-                paper
-                for paper in (previously_relevant if document_type == "articles" else unique)
-                if set(paper.sources) & {"oasisbr", "bdtd"}
-            ),
-            key=lambda paper: (
-                -int(paper.internal_id in relevant_ids),
-                -technical_relevance_signal(paper, focus, effective_queries),
-                -application_context_signal(paper),
-                -int(is_long_form_document(paper.document_type)),
-                paper.title.casefold(),
-            ),
-        )[: max(limit * 2, 6)]
-        for paper in repository_candidates:
-            if repository_verified >= limit or time.monotonic() >= search_deadline:
-                break
-            if paper.access_status == "verified_pdf" and paper.full_text_url:
-                continue
-            try:
-                self.repository_resolver.resolve(paper)
-            except Exception:
-                logger.info(
-                    "event=repository_metadata_enrichment status=error paper_id=%s",
-                    paper.internal_id,
-                    exc_info=True,
-                )
-            if paper.candidate_full_text_urls():
-                self._validate_papers([paper])
-                if paper.access_status == "verified_pdf" and paper.full_text_url:
-                    repository_verified += 1
-                    if repository_verified >= limit:
-                        break
-        # Repository/OAI enrichment can fill a previously missing year or
-        # academic ID. Run identity merging again before the hard gates so a
-        # record found by Oasisbr and OpenAlex cannot occupy two final slots.
-        unique = deduplicate_papers(unique)
-        unique, relevance_counts = filter_relevant_papers(
-            unique,
-            focus,
-            effective_queries,
-            require_context=True,
-        )
-        filter_counts.update(relevance_counts)
-        statuses = self._aggregate_statuses(source_results)
-        self.last_status = statuses
-        ranked = rank_papers(
-            unique,
-            effective_queries,
-            technical_focus=focus,
-            limit=None,
-            prefer_theses=prefer_long_form,
-            require_context=True,
-        )
-        stored = self.storage.upsert_papers(ranked)
-        ranked = rank_papers(
-            stored,
-            effective_queries,
-            technical_focus=focus,
-            limit=None,
-            prefer_theses=prefer_long_form,
-            require_context=True,
-        )
-        final, rejected_links = self._select_final_papers(
-            ranked,
-            limit=limit,
-            open_access_only=True,
-            prefer_long_form=prefer_long_form,
+            technical_focus=technical_focus,
+            stage=1,
             deadline=search_deadline,
         )
-        filter_counts["unverified_open_access"] = rejected_links
-        final = self.storage.upsert_papers(final)
-        verified_found = sum(
-            paper.access_status == "verified_pdf" and bool(paper.full_text_url)
-            for paper in ranked
+        focus = (technical_focus or queries[0]).strip()
+        final, ranked, filter_counts = self._rank_and_verify(
+            source_results, focus=focus, queries=effective_queries,
+            limit=limit, document_type=document_type,
+            prefer_long_form=prefer_long_form,
+            exclude_electric_vehicles=exclude_electric_vehicles,
+            deadline=search_deadline,
         )
+        if len(final) < limit and time.monotonic() < search_deadline:
+            fallback = self.router.search(
+                queries=effective_queries, limit=limit,
+                year_from=year_from, year_to=year_to,
+                prefer_long_form=prefer_long_form, document_type=document_type,
+                technical_focus=technical_focus, stage=2,
+                deadline=search_deadline,
+            )
+            source_results.extend(fallback)
+            final, ranked, filter_counts = self._rank_and_verify(
+                source_results, focus=focus, queries=effective_queries,
+                limit=limit, document_type=document_type,
+                prefer_long_form=prefer_long_form,
+                exclude_electric_vehicles=exclude_electric_vehicles,
+                deadline=search_deadline,
+            )
+        statuses = self._aggregate_statuses(source_results)
+        self.last_status = statuses
+        verified_found = len(final)
         filter_warnings: list[str] = []
         if filter_counts["electric_vehicle"]:
             filter_warnings.append(
@@ -801,7 +781,7 @@ class ResearchService:
             filter_warnings.append(
                 f"Apenas {len(final)} trabalho(s) atenderam simultaneamente aos critérios de tema, contexto Baja e PDF gratuito verificado."
             )
-        if final:
+        if final or not any(item.error for item in source_results):
             self.storage.save_search(
                 cache_key=key,
                 original_query=original_query,
@@ -819,7 +799,7 @@ class ResearchService:
         logger.info(
             "event=academic_search cache=miss queries=%d unique_results=%d returned=%d",
             len(effective_queries),
-            len(unique),
+            len(ranked),
             len(final),
         )
         return self._search_response(

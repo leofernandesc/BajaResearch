@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 try:
     from .models import normalize_title
 except ImportError:  # pragma: no cover - direct test imports
@@ -95,14 +97,60 @@ def infer_technical_focus(value: str) -> str:
 
 
 def infer_document_type(value: str) -> str:
-    """Infer strict work type only from an explicit user type word."""
+    """Treat *artigos* as academic literature unless exclusivity is explicit."""
     intent = normalize_title(value)
     words = set(intent.split())
     if words & {"tcc", "tccs"} or "trabalho de conclusao" in intent:
         return "bachelor_thesis"
-    if words & {"artigo", "artigos", "article", "articles"}:
+    if words & {"dissertacao", "dissertacoes", "tese", "teses"}:
+        return "long_form"
+    exclusive = bool(words & {"somente", "apenas", "exclusivamente", "only"})
+    article_kind = "artigos de periodico" in intent or "journal articles" in intent
+    if (exclusive or article_kind) and words & {"artigo", "artigos", "article", "articles"}:
         return "articles"
     return "any"
+
+
+@dataclass(frozen=True)
+class SourceQueryPlan:
+    """A bounded, source-aware retrieval schedule independent of LLM quality."""
+
+    primary: dict[str, str]
+    fallback: dict[str, str]
+
+
+def build_source_query_plan(technical_focus: str, queries: list[str]) -> SourceQueryPlan:
+    """Keep the user's topic while varying application and API syntax."""
+    normalized = normalize_title(technical_focus)
+    tokens = [word for word in normalized.split() if word not in _IGNORED_FOCUS_WORDS]
+    topic = next((word for word in tokens if word in _BILINGUAL_TERMS), None)
+    topic = topic or " ".join(tokens[:2]) or infer_technical_focus(" ".join(queries))
+    english, portuguese = _BILINGUAL_TERMS.get(topic, (topic, topic))
+    if not english:
+        english = portuguese = "baja"
+    # OpenAlex supports Boolean expressions; the repository indexes work
+    # better with short, plain Portuguese strings.
+    contextual = (
+        f'({english} AND ("Baja SAE" OR "Formula SAE" OR '
+        '"Formula Student" OR "off-road" OR "all terrain vehicle"))'
+    )
+    return SourceQueryPlan(
+        primary={
+            "openalex": contextual,
+            "oasisbr": f"Baja SAE {portuguese}",
+            "openaire": f"Baja SAE {english}",
+            "ufscar": f"Baja {portuguese}",
+        },
+        fallback={
+            "openalex": f"Formula SAE {english}",
+            "oasisbr": f"Baja {portuguese}",
+            "openaire": f"Formula Student {english}",
+            "bdtd": f"Baja {portuguese}",
+            "semantic_scholar": f"Formula SAE {english}",
+            "arxiv": f"Formula SAE {english}",
+            "ufscar": f"Formula SAE {portuguese}",
+        },
+    )
 
 
 def requests_electric_vehicle(value: str) -> bool:
@@ -140,6 +188,7 @@ def expand_plugin_queries(
         # Compact context-bearing queries are independent of whether the LLM
         # added quotes, access words or too many methodology terms.
         expanded = [f"Baja SAE {portuguese}", f"Baja SAE {english}", *expanded]
+        expanded.extend((f"Formula SAE {english}", f"Formula Student {english}"))
     if baja_context and not has_context:
         expanded.extend(
             (f"Baja SAE {base}", f"{base} off-road vehicle Formula SAE")
@@ -152,10 +201,10 @@ def expand_plugin_queries(
                 f"{base} off-road vehicle undergraduate thesis institutional repository",
             )
         )
-    return list(dict.fromkeys(expanded))[:8]
+    return list(dict.fromkeys(expanded))[:10]
 
 
 __all__ = [
-    "expand_plugin_queries", "infer_document_type", "infer_technical_focus",
+    "SourceQueryPlan", "build_source_query_plan", "expand_plugin_queries", "infer_document_type", "infer_technical_focus",
     "requests_electric_vehicle",
 ]

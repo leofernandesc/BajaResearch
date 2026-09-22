@@ -159,4 +159,4 @@ def test_repository_query_uses_portuguese_topic_without_pdf_keywords(tmp_path):
     )
     router.search(queries=queries, limit=3, year_from=None, year_to=None, prefer_long_form=True)
     assert oasis.queries[0] == "Baja SAE suspensão"
-    assert openalex.queries[0] == "Baja SAE suspension"
+    assert 'suspension AND ("Baja SAE" OR "Formula SAE"' in openalex.queries[0]

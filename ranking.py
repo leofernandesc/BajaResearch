@@ -75,7 +75,7 @@ _STRONG_CONTEXT_TERMS = {
     "baja sae", "sae baja", "mini baja", "formula sae", "formula student",
     "off road", "offroad", "all terrain vehicle", "all terrain vehicles", "atv",
 }
-_MOTORSPORT_TERMS = {"motorsport", "race car", "racing vehicle", "competition vehicle"}
+_MOTORSPORT_TERMS = {"motorsport", "race car", "racing car", "racing vehicle", "competition vehicle"}
 _GENERAL_VEHICLE_TERMS = {"automotive", "vehicle dynamics", "ground vehicle"}
 _ELECTRIC_VEHICLE_TERMS = {
     "electric vehicle", "electric vehicles", "battery electric vehicle",

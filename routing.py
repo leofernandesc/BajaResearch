@@ -14,13 +14,15 @@ from typing import Any, Iterable, Mapping
 try:
     from .clients.base import SourceResult, timed_call
     from .models import Paper, is_long_form_document, normalize_title
+    from .querying import build_source_query_plan
 except ImportError:  # pragma: no cover
     from clients.base import SourceResult, timed_call
     from models import Paper, is_long_form_document, normalize_title
+    from querying import build_source_query_plan
 
 
 logger = logging.getLogger(__name__)
-ROUTER_VERSION = "3"
+ROUTER_VERSION = "4"
 
 _PORTUGUESE_TOPIC_WORDS = {
     "suspensao", "chassi", "eletronica", "telemetria", "freios", "freio",
@@ -303,9 +305,12 @@ class SearchRouter:
         year_to: int | None,
         prefer_long_form: bool,
         document_type: str = "any",
+        technical_focus: str | None = None,
+        stage: int = 1,
+        deadline: float | None = None,
     ) -> list[SourceResult]:
         started = time.monotonic()
-        deadline = started + self.global_timeout_seconds
+        deadline = min(deadline or float("inf"), started + self.global_timeout_seconds)
         source_limit = max(20, min(40, limit * 8))
         filters = {
             "source_limit": source_limit,
@@ -313,65 +318,47 @@ class SearchRouter:
             "year_to": year_to,
             "open_access_only": True,
         }
+        plan = build_source_query_plan(technical_focus or queries[0], queries)
+        scheduled = plan.primary if stage == 1 else plan.fallback
+        if stage != 1 and document_type == "bachelor_thesis":
+            scheduled = {
+                key: value for key, value in scheduled.items()
+                if key not in {"semantic_scholar", "arxiv", "bdtd"}
+            }
         results: list[SourceResult] = []
-        prioritized = self._prioritized_queries(queries)
-        # One query per keyless endpoint avoids the burst behavior that causes
-        # 429/503 responses. Different sources still cover complementary query
-        # variants, and each source/query result has its own cache.
-        repository_queries = [self._preferred_query(prioritized, repository=True)]
-        bdtd_queries = repository_queries
-        global_queries = [self._preferred_query(prioritized, repository=False)]
-
-        oasis_deadline = min(deadline, time.monotonic() + 5.0)
-        results.extend(
-            self._stage(
-                ["oasisbr"],
-                repository_queries,
-                filters=filters,
-                deadline=oasis_deadline,
-            )
-        )
-        long_form_count = sum(
-            is_long_form_document(paper.document_type)
-            for paper in self._papers(results)
-        )
-        if (
-            prefer_long_form
-            and document_type != "bachelor_thesis"
-            and long_form_count < max(limit * 2, 6)
-        ):
-            bdtd_deadline = min(deadline, time.monotonic() + 4.0)
-            results.extend(
-                self._stage(
-                    ["bdtd"],
-                    bdtd_queries,
-                    filters=filters,
-                    deadline=bdtd_deadline,
-                )
-            )
-
-        openalex_deadline = min(deadline, time.monotonic() + 6.0)
-        results.extend(
-            self._stage(
-                ["openalex", "openaire"], global_queries, filters=filters, deadline=openalex_deadline
-            )
-        )
-        usable_count = len(self._papers(results))
-        openalex_failed = any(
-            result.source == "openalex" and result.error is not None
-            for result in results
-        )
-        if usable_count < max(limit * 3, 12) or openalex_failed:
-            results.extend(
-                self._stage(
-                    ["semantic_scholar"],
-                    global_queries,
-                    filters=filters,
-                    deadline=deadline,
-                )
-            )
+        # One query per source in each stage. The service requests stage two
+        # only after measuring *verified* relevant yield, never raw API counts.
+        selected = [source for source in scheduled if source in self.clients]
+        if selected:
+            executor = ThreadPoolExecutor(max_workers=len(selected), thread_name_prefix="baja-sources")
+            try:
+                futures = {
+                    source: executor.submit(
+                        self._run_query, source, scheduled[source],
+                        filters=filters, deadline=deadline,
+                    )
+                    for source in selected
+                }
+                for source, future in futures.items():
+                    try:
+                        results.append(future.result(timeout=max(0.0, deadline - time.monotonic())))
+                    except FuturesTimeout:
+                        results.append(SourceResult(
+                            source=source, query=scheduled[source], skipped=True,
+                            error={"source": source, "code": "request_budget_exhausted",
+                                   "message": "source request budget was exhausted", "retryable": True},
+                        ))
+                    except Exception as exc:
+                        results.append(SourceResult(
+                            source=source, query=scheduled[source],
+                            error={"source": source, "code": "unexpected_source_error",
+                                   "message": f"{type(exc).__name__}: {exc}", "retryable": False},
+                        ))
+            finally:
+                executor.shutdown(wait=False, cancel_futures=True)
         logger.info(
-            "event=source_routing elapsed_ms=%.2f calls=%d results=%d",
+            "event=source_routing stage=%d elapsed_ms=%.2f calls=%d results=%d",
+            stage,
             (time.monotonic() - started) * 1000,
             len(results),
             len(self._papers(results)),
