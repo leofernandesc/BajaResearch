@@ -6,10 +6,10 @@ from typing import Any, Mapping
 
 try:
     from .models import normalize_doi, normalize_title
-    from .querying import infer_document_type, infer_technical_focus
+    from .querying import infer_document_type, infer_technical_focus, requests_electric_vehicle
 except ImportError:  # pragma: no cover - direct test imports
     from models import normalize_doi, normalize_title
-    from querying import infer_document_type, infer_technical_focus
+    from querying import infer_document_type, infer_technical_focus, requests_electric_vehicle
 
 
 SEARCH_SCHEMA = {
@@ -47,7 +47,7 @@ SEARCH_SCHEMA = {
             "exclude_electric_vehicles": {
                 "type": "boolean",
                 "default": True,
-                "description": "Exclude papers primarily about electric, hybrid or fuel-cell vehicles unless explicitly disabled.",
+                "description": "Exclude electric/hybrid/fuel-cell vehicles. False is honored only when original_query explicitly requests EV technology.",
             },
             "document_preference": {
                 "type": "string",
@@ -170,6 +170,8 @@ def validate_search_args(args: Mapping[str, Any]) -> dict[str, Any]:
     original_query = args.get("original_query")
     if original_query is not None and not isinstance(original_query, str):
         raise ValueError("original_query must be a string when supplied")
+    if not exclude_electric_vehicles and not requests_electric_vehicle(original_query or ""):
+        exclude_electric_vehicles = True
     document_type = args.get("document_type")
     if document_type is None:
         document_type = infer_document_type(" ".join([original_query or "", *queries]))

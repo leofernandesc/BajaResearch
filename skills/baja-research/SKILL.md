@@ -1,7 +1,7 @@
 ---
 name: baja-research
 description: "Find free, verified, technically relevant academic work for Baja SAE teams."
-version: 0.3.0
+version: 0.3.1
 author: Leonardo Fernandes Cavalcante
 license: MIT
 metadata:

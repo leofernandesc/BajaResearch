@@ -13,8 +13,9 @@ except ImportError:  # pragma: no cover
     from models import Paper, is_long_form_document, normalize_title
 
 
-RANKING_VERSION = "2"
+RANKING_VERSION = "3"
 TECHNICAL_RELEVANCE_THRESHOLD = 0.30
+FOCUS_RELEVANCE_THRESHOLD = 0.15
 APPLICATION_CONTEXT_THRESHOLD = 0.70
 
 _STOPWORDS = {
@@ -262,6 +263,7 @@ def quality_signals(
         "technical_relevance": technical_relevance_signal(
             paper, technical_focus, queries
         ),
+        "focus_relevance": technical_relevance_signal(paper, technical_focus, ()),
         "application_context": application_context_signal(paper),
         "source_relevance": _source_relevance(paper),
         "completeness": _completeness_signal(paper),
@@ -285,8 +287,9 @@ def filter_relevant_papers(
     rejected = {"wrong_technical_focus": 0, "missing_baja_context": 0}
     for paper in papers:
         technical = technical_relevance_signal(paper, technical_focus, query_list)
+        focus = technical_relevance_signal(paper, technical_focus, ())
         context = application_context_signal(paper)
-        if technical < TECHNICAL_RELEVANCE_THRESHOLD:
+        if technical < TECHNICAL_RELEVANCE_THRESHOLD or focus < FOCUS_RELEVANCE_THRESHOLD:
             rejected["wrong_technical_focus"] += 1
             continue
         if require_context and context < APPLICATION_CONTEXT_THRESHOLD:
@@ -334,6 +337,7 @@ def rank_papers(
         # hard gates applied by ``filter_relevant_papers`` in the service.
         components["passes_technical_gate"] = float(
             components["technical_relevance"] >= TECHNICAL_RELEVANCE_THRESHOLD
+            and components["focus_relevance"] >= FOCUS_RELEVANCE_THRESHOLD
         )
         components["passes_context_gate"] = float(
             not require_context

@@ -7,6 +7,7 @@ def test_short_tcc_request_gets_implicit_baja_pdf_policy():
     assert "Baja SAE" in result["context"]
     assert "PDF completo, gratuito e verificado" in result["context"]
     assert "document_type=bachelor_thesis" in result["context"]
+    assert "exclude_electric_vehicles=true" in result["context"]
 
 
 def test_nonacademic_request_is_untouched():

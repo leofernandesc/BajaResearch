@@ -28,10 +28,28 @@ def test_direct_query_match_beats_high_citation_off_topic_paper():
     ranked = rank_papers([famous, direct], ["Baja SAE suspension optimization"], current_year=2026)
     assert ranked[0].title == direct.title
     assert set(ranked[0].score_details) == {
-        "technical_relevance", "application_context", "source_relevance",
+        "technical_relevance", "focus_relevance", "application_context", "source_relevance",
         "completeness", "multi_source", "citation_signal", "recency_signal",
         "long_form", "passes_technical_gate", "passes_context_gate",
     }
+
+
+def test_education_retrieval_terms_cannot_fake_electronics_relevance():
+    generic = Paper(
+        "", "Undergraduate Research and Development Explores Energy Conservation",
+        abstract="Experimental vehicle projects include Baja SAE and Formula SAE.",
+        topics=["Electrical engineering", "Engineering education"],
+    )
+    queries = [
+        "Baja SAE eletrônica",
+        "eletrônica off-road vehicle undergraduate thesis institutional repository",
+    ]
+    kept, rejected = filter_relevant_papers([generic], "eletronica", queries)
+    assert kept == []
+    assert rejected["wrong_technical_focus"] == 1
+    ranked = rank_papers([generic], queries, technical_focus="eletronica")
+    assert ranked[0].score_details["focus_relevance"] == 0
+    assert ranked[0].score_details["passes_technical_gate"] == 0
 
 
 def test_multiple_sources_and_missing_abstract_are_supported():

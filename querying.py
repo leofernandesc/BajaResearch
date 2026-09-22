@@ -105,6 +105,23 @@ def infer_document_type(value: str) -> str:
     return "any"
 
 
+def requests_electric_vehicle(value: str) -> bool:
+    """Only a clearly electric-vehicle user request can relax the EV exclusion."""
+    normalized = normalize_title(value)
+    words = set(normalized.split())
+    if words & {"ev", "evs", "hybrid", "hibrido", "hibridos", "hibrida", "hibridas"}:
+        return True
+    return any(
+        phrase in normalized
+        for phrase in (
+            "veiculo eletrico", "veiculos eletricos", "veiculo eletrica",
+            "carro eletrico", "carros eletricos", "electric vehicle",
+            "electric car", "battery electric", "fuel cell vehicle",
+            "celula a combustivel",
+        )
+    )
+
+
 def expand_plugin_queries(
     queries: list[str],
     *,
@@ -138,4 +155,7 @@ def expand_plugin_queries(
     return list(dict.fromkeys(expanded))[:8]
 
 
-__all__ = ["expand_plugin_queries", "infer_document_type", "infer_technical_focus"]
+__all__ = [
+    "expand_plugin_queries", "infer_document_type", "infer_technical_focus",
+    "requests_electric_vehicle",
+]

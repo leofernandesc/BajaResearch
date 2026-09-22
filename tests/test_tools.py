@@ -87,6 +87,34 @@ def test_invalid_tool_arguments_are_structured():
     assert parsed["technical_focus"] == "suspensao"
 
 
+def test_model_cannot_disable_ev_filter_for_plain_electronics_request(tmp_path):
+    request = {
+        "queries": ["artigos de eletronica"],
+        "original_query": "Artigos de eletronica",
+        "exclude_electric_vehicles": False,
+    }
+    assert validate_search_args(request)["exclude_electric_vehicles"] is True
+    client = FakeClient()
+    client.papers = []
+    service = ResearchService(
+        config=ResearchConfig(cache_ttl_hours=0),
+        storage=ResearchStorage(tmp_path / "cache.sqlite3"),
+        clients={"oasisbr": client},
+        link_validator=AcceptAllPdfVerifier(),
+    )
+    result = service.search(
+        queries=["artigos de eletronica"],
+        original_query="Artigos de eletronica",
+        exclude_electric_vehicles=False,
+    )
+    assert result["filters"]["exclude_electric_vehicles"] is True
+    assert validate_search_args({
+        "queries": ["Baja SAE electric vehicle telemetry"],
+        "original_query": "Quero trabalhos sobre veículo elétrico Baja SAE",
+        "exclude_electric_vehicles": False,
+    })["exclude_electric_vehicles"] is False
+
+
 def test_short_request_implies_baja_and_free_pdf(tmp_path):
     paper = Paper(
         "", "Projeto de suspensão para Baja SAE", document_type="bachelor_thesis",

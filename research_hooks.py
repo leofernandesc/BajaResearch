@@ -26,8 +26,10 @@ def academic_request_context(user_message: str = "", platform: str = "", **_kwar
             "e o limite pedido; consultas curtas em português são válidas, e technical_focus é opcional. "
             "Se pediu TCC, use document_type=bachelor_thesis; se pediu artigos, "
             "document_type=articles. Não repita busca por padrão; só amplie uma vez se "
-            "vier zero e restar assunto técnico específico. Responda apenas com os resultados "
-            "atuais da ferramenta e full_text_url dos registros access_status=verified_pdf. "
+            "vier zero e restar assunto técnico específico. "
+            "Mantenha exclude_electric_vehicles=true, salvo pedido explícito do usuário por EV. "
+            "Responda apenas com os resultados atuais da ferramenta e full_text_url "
+            "dos registros access_status=verified_pdf. "
             "Nunca complete DOI, título, autores, PDF ou quantidade de resultados de memória. "
             "Se retornarem menos trabalhos, informe isso e as fontes indisponíveis."
         )

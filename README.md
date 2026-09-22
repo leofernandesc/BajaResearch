@@ -1,7 +1,7 @@
 # BAJA Research
 
 BAJA Research é um plugin standalone para o Hermes Agent que encontra
-literatura acadêmica aplicável a equipes Baja SAE. A versão 0.3 foi desenhada
+literatura acadêmica aplicável a equipes Baja SAE. A versão 0.3.1 foi desenhada
 para uso local no terminal e no WhatsApp self-chat, com prioridade para TCCs,
 monografias, dissertações e teses extensas.
 
@@ -25,6 +25,8 @@ Um trabalho só é recomendado quando satisfaz simultaneamente estes critérios:
 O usuário não precisa escrever "Baja", "PDF completo" ou "gratuito" no pedido.
 Exemplo suficiente: `Busque 3 TCCs sobre suspensão`. Nesse caso, o tipo TCC
 também é obrigatório: dissertações não ocupam suas vagas.
+O modelo não consegue desativar sozinho o filtro de EV: a exceção só é aceita
+quando a pergunta original menciona explicitamente essa tecnologia.
 
 DOI, selo open access, página de editora, landing page de repositório e HTTP
 200 não são prova suficiente de acesso gratuito. O plugin retorna menos
@@ -115,7 +117,10 @@ A deduplicação usa, nesta ordem:
 4. correspondência fuzzy conservadora, somente quando os sinais são seguros.
 
 Antes do ranking, gates rígidos eliminam foco técnico incorreto e ausência de
-contexto Baja/Formula/off-road. Dentro de cada classe documental, o score usa
+contexto Baja/Formula/off-road. A correspondência com o foco técnico é testada
+separadamente das consultas expandidas: termos de recuperação como
+`undergraduate` não podem justificar um trabalho fora do tema. Dentro de cada
+classe documental, o score usa
 52% de relevância técnica, 25% de contexto de aplicação, 8% de relevância da
 fonte, 5% de completude, 4% de confirmação multi-fonte, 4% de citações
 log-normalizadas e 2% de recência. Assim, citações e novidade não dominam a
@@ -351,6 +356,10 @@ de ranking e disponibilidade observada das fontes.
   outras fontes continuam válidos e o erro deve ser informado na resposta.
 - **Vieram menos trabalhos que o pedido:** os demais falharam em tema, contexto
   Baja, filtro de EV ou validação do PDF. Isso é comportamento intencional.
+- **Pedido curto de artigos retornou poucos resultados:** artigos pagos ou
+  genericamente sobre eletrônica são excluídos. Experimente pedir `TCCs sobre
+  eletrônica` se trabalhos extensos de telemetria e sistemas embarcados também
+  servirem; o plugin não troca silenciosamente o tipo pedido.
 - **Nenhum TCC:** use uma consulta técnica em português e outra em inglês. Não
   remova o contexto Baja/Formula/off-road e não transforme o pedido em um tema
   genérico.

@@ -30,7 +30,7 @@ try:
         merge_papers,
         normalize_doi,
     )
-    from .querying import expand_plugin_queries, infer_document_type, infer_technical_focus
+    from .querying import expand_plugin_queries, infer_document_type, infer_technical_focus, requests_electric_vehicle
     from .routing import SearchRouter
     from .ranking import (
         application_context_signal,
@@ -66,7 +66,7 @@ except ImportError:  # pragma: no cover - direct module imports
     from citations import format_abnt, format_bibtex
     from config import ResearchConfig, config_from_context
     from models import Paper, deduplicate_papers, is_long_form_document, merge_papers, normalize_doi
-    from querying import expand_plugin_queries, infer_document_type, infer_technical_focus
+    from querying import expand_plugin_queries, infer_document_type, infer_technical_focus, requests_electric_vehicle
     from routing import SearchRouter
     from ranking import RANKING_VERSION, application_context_signal, filter_relevant_papers, is_electric_vehicle_paper, rank_papers, technical_relevance_signal
     from schemas import (
@@ -573,6 +573,8 @@ class ResearchService:
         document_type = document_type or infer_document_type(
             " ".join([original_query or "", *queries])
         )
+        if not exclude_electric_vehicles and not requests_electric_vehicle(original_query or ""):
+            exclude_electric_vehicles = True
         if document_preference not in {"long_form_first", "articles_first"}:
             raise ValueError(
                 "document_preference must be 'long_form_first' or 'articles_first'"
@@ -583,7 +585,7 @@ class ResearchService:
             bool(prefer_theses)
             if prefer_theses is not None
             else document_preference == "long_form_first"
-        )
+        ) and document_type != "articles"
         # Invariants: these are intentionally not configurable in the tool.
         open_access_only = True
         baja_context = True
@@ -697,7 +699,7 @@ class ResearchService:
         repository_candidates = sorted(
             (
                 paper
-                for paper in unique
+                for paper in (previously_relevant if document_type == "articles" else unique)
                 if set(paper.sources) & {"oasisbr", "bdtd"}
             ),
             key=lambda paper: (
