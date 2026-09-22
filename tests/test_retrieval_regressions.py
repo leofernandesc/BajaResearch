@@ -96,3 +96,47 @@ def test_tcc_is_preferred_but_good_article_not_discarded(tmp_path):
     result = service.search(queries=["artigos sobre LoRa"], limit=3,
                             original_query="artigos sobre LoRa")
     assert [item["title"] for item in result["results"]][:2] == [tcc.title, article.title]
+
+
+def test_local_fts_fallback_rechecks_pdf_and_preserves_baja_gate(tmp_path):
+    storage = ResearchStorage(tmp_path / "research.sqlite3")
+    storage.upsert_papers([
+        Paper("", "LoRa telemetry for Formula SAE racing vehicle",
+              document_type="conference_paper", sources=["openalex"],
+              open_access_url="https://example.org/racing.pdf"),
+        Paper("", "LoRa telemetry for farms", document_type="article",
+              sources=["openalex"], open_access_url="https://example.org/farm.pdf"),
+    ])
+    service = ResearchService(
+        config=ResearchConfig(cache_ttl_hours=0), storage=storage,
+        clients={"openalex": Source([])}, link_validator=PdfVerifier(),
+    )
+    result = service.search(queries=["artigos sobre LoRa"], original_query="artigos sobre LoRa", limit=2)
+    assert result["returned"] == 1
+    assert result["results"][0]["title"] == "LoRa telemetry for Formula SAE racing vehicle"
+    assert result["sources"]["local_cache"]["status"] == "ok"
+
+
+def test_cached_articles_cannot_preempt_new_higher_priority_tcc(tmp_path):
+    service = ResearchService(
+        storage=ResearchStorage(tmp_path / "research.sqlite3"),
+        clients={}, link_validator=PdfVerifier(),
+    )
+    tcc = Paper("", "Sistema de telemetria LoRa para Baja SAE",
+                document_type="bachelor_thesis", sources=["ufscar"],
+                open_access_url="https://example.org/tcc.pdf")
+    cached_articles = [
+        Paper("", f"LoRa telemetry for Formula SAE vehicle {index}",
+              document_type="conference_paper", sources=["openalex"],
+              open_access_url=f"https://example.org/article-{index}.pdf",
+              full_text_url=f"https://example.org/article-{index}.pdf",
+              access_status="verified_pdf")
+        for index in range(3)
+    ]
+    selected, rejected = service._select_final_papers(
+        [*cached_articles, tcc], limit=3,
+        open_access_only=True, prefer_long_form=True,
+    )
+    assert selected[0].title == tcc.title
+    assert len(selected) == 3
+    assert rejected == 0

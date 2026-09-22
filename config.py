@@ -12,14 +12,16 @@ class ResearchConfig:
     cache_ttl_hours: float = 24.0
     source_cache_ttl_hours: float = 24.0
     request_timeout_seconds: float = 8.0
-    global_timeout_seconds: float = 25.0
+    global_timeout_seconds: float = 60.0
     circuit_breaker_seconds: float = 60.0
     max_retries: int = 1
     openalex_api_key: str | None = None
     semantic_scholar_api_key: str | None = None
     crossref_mailto: str | None = None
     unpaywall_email: str | None = None
-    access_timeout_seconds: float = 5.0
+    access_timeout_seconds: float = 20.0
+    max_pdf_mb: float = 40.0
+    max_search_pdf_mb: float = 160.0
     access_valid_ttl_hours: float = 1.0
     access_invalid_ttl_hours: float = 24.0
     access_temporary_ttl_hours: float = 1.0
@@ -59,16 +61,21 @@ def config_from_context(ctx: Any) -> ResearchConfig:
         context_timeout = float(context_timeout)
     except (TypeError, ValueError):
         context_timeout = 8.0
+    return config_from_env(default_ttl=context_ttl, default_timeout=context_timeout)
+
+
+def config_from_env(*, default_ttl: float = 24.0, default_timeout: float = 8.0) -> ResearchConfig:
+    """Apply the same configuration for Hermes, the CLI and smoke tests."""
     return ResearchConfig(
-        cache_ttl_hours=_env_float("BAJA_RESEARCH_CACHE_TTL_HOURS", context_ttl),
+        cache_ttl_hours=_env_float("BAJA_RESEARCH_CACHE_TTL_HOURS", default_ttl),
         source_cache_ttl_hours=_env_float(
             "BAJA_RESEARCH_SOURCE_CACHE_TTL_HOURS", 24.0
         ),
         request_timeout_seconds=_env_float(
-            "BAJA_RESEARCH_REQUEST_TIMEOUT_SECONDS", context_timeout
+            "BAJA_RESEARCH_REQUEST_TIMEOUT_SECONDS", default_timeout
         ),
         global_timeout_seconds=_env_float(
-            "BAJA_RESEARCH_GLOBAL_TIMEOUT_SECONDS", 25.0
+            "BAJA_RESEARCH_GLOBAL_TIMEOUT_SECONDS", 60.0
         ),
         circuit_breaker_seconds=_env_float(
             "BAJA_RESEARCH_CIRCUIT_BREAKER_SECONDS", 60.0
@@ -79,8 +86,10 @@ def config_from_context(ctx: Any) -> ResearchConfig:
         crossref_mailto=os.getenv("CROSSREF_MAILTO") or None,
         unpaywall_email=os.getenv("UNPAYWALL_EMAIL") or None,
         access_timeout_seconds=_env_float(
-            "BAJA_RESEARCH_ACCESS_TIMEOUT_SECONDS", 5.0
+            "BAJA_RESEARCH_ACCESS_TIMEOUT_SECONDS", 20.0
         ),
+        max_pdf_mb=_env_float("BAJA_RESEARCH_MAX_PDF_MB", 40.0),
+        max_search_pdf_mb=_env_float("BAJA_RESEARCH_MAX_SEARCH_PDF_MB", 160.0),
         access_valid_ttl_hours=_env_float(
             "BAJA_RESEARCH_ACCESS_VALID_TTL_HOURS", 1.0
         ),
@@ -93,4 +102,4 @@ def config_from_context(ctx: Any) -> ResearchConfig:
     )
 
 
-__all__ = ["ResearchConfig", "config_from_context"]
+__all__ = ["ResearchConfig", "config_from_context", "config_from_env"]

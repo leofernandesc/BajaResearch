@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 try:
     from .models import normalize_title
@@ -111,6 +112,18 @@ def infer_document_type(value: str) -> str:
     return "any"
 
 
+def infer_requested_limit(value: str) -> int | None:
+    """Recognize an explicit small count without interpreting technical numbers."""
+    match = re.search(
+        r"\b(\d{1,2})\s+(?:tccs?|artigos?|papers?|trabalhos?|monografias?|dissertacoes?|teses?)\b",
+        normalize_title(value),
+    )
+    if not match:
+        return None
+    count = int(match.group(1))
+    return count if 1 <= count <= 20 else None
+
+
 @dataclass(frozen=True)
 class SourceQueryPlan:
     """A bounded, source-aware retrieval schedule independent of LLM quality."""
@@ -206,5 +219,5 @@ def expand_plugin_queries(
 
 __all__ = [
     "SourceQueryPlan", "build_source_query_plan", "expand_plugin_queries", "infer_document_type", "infer_technical_focus",
-    "requests_electric_vehicle",
+    "requests_electric_vehicle", "infer_requested_limit",
 ]

@@ -6,24 +6,29 @@ from typing import Any, Mapping
 
 try:
     from .models import normalize_doi, normalize_title
-    from .querying import infer_document_type, infer_technical_focus, requests_electric_vehicle
+    from .querying import infer_document_type, infer_requested_limit, infer_technical_focus, requests_electric_vehicle
 except ImportError:  # pragma: no cover - direct test imports
     from models import normalize_doi, normalize_title
-    from querying import infer_document_type, infer_technical_focus, requests_electric_vehicle
+    from querying import infer_document_type, infer_requested_limit, infer_technical_focus, requests_electric_vehicle
 
 
 SEARCH_SCHEMA = {
     "name": "search_academic_papers",
-    "description": "Search real Baja/Formula/off-road academic literature across open repositories and academic APIs; return only anonymously verified full-text PDFs.",
+    "description": "Find Baja/Formula/off-road academic work from one natural-language request. Verified free full PDFs and Baja relevance are automatic; use request for a short user message, queries only for advanced search.",
     "parameters": {
         "type": "object",
         "properties": {
+            "request": {
+                "type": "string",
+                "minLength": 2,
+                "description": "The user's original request verbatim, e.g. '3 artigos sobre LoRa'. Preferred input; Baja context and free complete PDF are implicit.",
+            },
             "queries": {
                 "type": "array",
                 "items": {"type": "string"},
                 "minItems": 1,
                 "maxItems": 8,
-                "description": "One to eight complementary academic queries, preferably in technical English.",
+                "description": "Optional advanced search: one to eight complementary queries. Not needed when request is given.",
             },
             "technical_focus": {
                 "type": "string",
@@ -33,7 +38,7 @@ SEARCH_SCHEMA = {
             "document_type": {
                 "type": "string",
                 "enum": ["any", "bachelor_thesis", "long_form", "articles"],
-                "description": "Optional strict type filter. TCC requests imply bachelor_thesis; article requests imply articles. No filter otherwise.",
+                "description": "Optional strict type filter. Bare 'artigos' means academic works of any type; use articles only for explicit journal/conference-only requests.",
             },
             "limit": {
                 "type": "integer",
@@ -58,7 +63,8 @@ SEARCH_SCHEMA = {
             "original_query": {"type": ["string", "null"], "description": "The user's original question, when useful for diagnostics."},
             "refresh_cache": {"type": "boolean", "default": False, "description": "Ignore a fresh identical search cache entry."},
         },
-        "required": ["queries"],
+        "required": [],
+        "anyOf": [{"required": ["request"]}, {"required": ["queries"]}],
         "additionalProperties": False,
     },
 }
@@ -126,22 +132,30 @@ def _year(value: Any, name: str) -> int | None:
 
 
 def validate_search_args(args: Mapping[str, Any]) -> dict[str, Any]:
+    request = args.get("request")
+    if request is not None and (not isinstance(request, str) or len(request.strip()) < 2):
+        raise ValueError("request must be a non-empty natural-language question")
     raw_queries = args.get("queries")
-    if not isinstance(raw_queries, list):
-        raise ValueError("queries must be a non-empty list of strings")
-    queries = [str(query).strip() for query in raw_queries if isinstance(query, str) and query.strip()]
+    if raw_queries is not None and not isinstance(raw_queries, list):
+        raise ValueError("queries must be a list of strings")
+    queries = [query.strip() for query in (raw_queries or []) if isinstance(query, str) and query.strip()]
+    if not queries and request:
+        queries = [request.strip()]
     if not queries:
-        raise ValueError("queries must contain at least one non-empty string")
+        raise ValueError("request or queries must contain a non-empty string")
     if len(queries) > 8:
         raise ValueError("queries accepts at most 8 items")
+    original_query = request.strip() if request else args.get("original_query")
+    if original_query is not None and not isinstance(original_query, str):
+        raise ValueError("original_query must be a string when supplied")
     technical_focus = args.get("technical_focus")
     if technical_focus is None:
         technical_focus = infer_technical_focus(
-            str(args.get("original_query") or " ".join(queries))
+            str(original_query or " ".join(queries))
         )
     if not isinstance(technical_focus, str) or len(technical_focus.strip()) < 2:
         raise ValueError("technical_focus must be a non-empty technical description")
-    limit = args.get("limit", 5)
+    limit = args.get("limit", infer_requested_limit(original_query or "") or 5)
     if isinstance(limit, bool):
         raise ValueError("limit must be an integer")
     try:
@@ -167,14 +181,17 @@ def validate_search_args(args: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError(
             "document_preference must be 'long_form_first' or 'articles_first'"
         )
-    original_query = args.get("original_query")
-    if original_query is not None and not isinstance(original_query, str):
-        raise ValueError("original_query must be a string when supplied")
     if not exclude_electric_vehicles and not requests_electric_vehicle(original_query or ""):
         exclude_electric_vehicles = True
     document_type = args.get("document_type")
+    intent_type = infer_document_type(original_query or "") if original_query else None
     if document_type is None:
         document_type = infer_document_type(" ".join([original_query or "", *queries]))
+    elif original_query and intent_type in {"bachelor_thesis", "long_form"}:
+        document_type = intent_type
+    elif original_query and document_type == "articles" and intent_type == "any":
+        # The LLM must not turn colloquial 'artigos' into a strict article gate.
+        document_type = "any"
     if document_type not in {"any", "bachelor_thesis", "long_form", "articles"}:
         raise ValueError("document_type must be any, bachelor_thesis, long_form or articles")
     return {

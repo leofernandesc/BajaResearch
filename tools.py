@@ -12,6 +12,7 @@ from typing import Any, Callable, Iterable, Mapping
 
 try:
     from .clients.base import SourceError, SourceResult, timed_call
+    from .clients.arxiv import ArxivClient
     from .clients.bdtd import BdtdClient
     from .clients.crossref import CrossrefClient
     from .clients.link_validator import LinkValidator
@@ -21,6 +22,7 @@ try:
     from .clients.repositories import RepositoryResolver
     from .clients.semantic_scholar import SemanticScholarClient
     from .clients.unpaywall import UnpaywallClient
+    from .clients.ufscar import UfscarClient
     from .citations import format_abnt, format_bibtex
     from .config import ResearchConfig, config_from_context
     from .models import (
@@ -54,6 +56,7 @@ try:
     from .storage import ResearchStorage
 except ImportError:  # pragma: no cover - direct module imports
     from clients.base import SourceError, SourceResult, timed_call
+    from clients.arxiv import ArxivClient
     from clients.bdtd import BdtdClient
     from clients.crossref import CrossrefClient
     from clients.link_validator import LinkValidator
@@ -63,6 +66,7 @@ except ImportError:  # pragma: no cover - direct module imports
     from clients.repositories import RepositoryResolver
     from clients.semantic_scholar import SemanticScholarClient
     from clients.unpaywall import UnpaywallClient
+    from clients.ufscar import UfscarClient
     from citations import format_abnt, format_bibtex
     from config import ResearchConfig, config_from_context
     from models import Paper, deduplicate_papers, is_long_form_document, merge_papers, normalize_doi
@@ -125,6 +129,11 @@ class ResearchService:
                     timeout=self.config.request_timeout_seconds,
                     max_retries=self.config.max_retries,
                 ),
+                "ufscar": UfscarClient(
+                    timeout=self.config.request_timeout_seconds,
+                    max_retries=self.config.max_retries,
+                ),
+                "arxiv": ArxivClient(timeout=self.config.request_timeout_seconds),
                 "bdtd": BdtdClient(
                     timeout=self.config.request_timeout_seconds,
                     max_retries=self.config.max_retries,
@@ -152,6 +161,8 @@ class ResearchService:
         )
         self.link_validator = link_validator or LinkValidator(
             timeout=self.config.access_timeout_seconds,
+            max_bytes=int(self.config.max_pdf_mb * 1024 * 1024),
+            max_total_bytes=int(self.config.max_search_pdf_mb * 1024 * 1024),
             storage=self.storage,
             valid_ttl_hours=self.config.access_valid_ttl_hours,
             invalid_ttl_hours=self.config.access_invalid_ttl_hours,
@@ -287,7 +298,7 @@ class ResearchService:
                 counts["electric_vehicle"] += 1
                 continue
             has_access_path = bool(paper.candidate_full_text_urls()) or bool(
-                paper.landing_url and set(paper.sources) & {"oasisbr", "bdtd"}
+                paper.landing_url and set(paper.sources) & {"oasisbr", "bdtd", "ufscar"}
             )
             if open_access_only and not has_access_path:
                 counts["not_open_access"] += 1
@@ -313,46 +324,34 @@ class ResearchService:
             final = ordered[:limit]
             self._validate_papers(final)
             return final, 0
-        already_verified = [
-            paper
-            for paper in ordered
-            if paper.access_status == "verified_pdf" and paper.full_text_url
-        ]
-        # Recheck the highest-ranked cached links. A prior verification is not
-        # proof that a repository still serves the PDF today.
-        already_verified = already_verified[: max(6, limit * 2)]
-        self._validate_papers(already_verified)
-        already_verified = [
-            paper for paper in already_verified
-            if paper.access_status == "verified_pdf" and paper.full_text_url
-        ]
-        if len(already_verified) >= limit:
-            return already_verified[:limit], 0
-        # Work in small ordered batches and stop as soon as the final count is
-        # filled. This bounds network work for WhatsApp while preserving the
-        # long-form-first policy.
-        candidate_window = [
-            paper for paper in ordered
-            if paper.access_status != "verified_pdf"
-        ][: max(12, limit * 4)]
-        usable: list[Paper] = list(already_verified)
-        attempted = 0
+        if deadline is not None and time.monotonic() >= deadline:
+            # Budget exhaustion may still return previously found papers, but
+            # their links must pass the current access verifier first.
+            previously_verified = [paper for paper in ordered
+                                   if paper.access_status == "verified_pdf" and paper.full_text_url][:limit]
+            self._validate_papers(previously_verified)
+            return [paper for paper in previously_verified
+                    if paper.access_status == "verified_pdf" and paper.full_text_url], 0
+        # A previously verified lower-ranked result must never fill the quota
+        # before a new, higher-ranked TCC gets its PDF checked.
+        candidate_window = ordered[: max(12, limit * 4)]
+        usable: list[Paper] = []
+        considered = 0
         for offset in range(0, len(candidate_window), 4):
             if deadline is not None and time.monotonic() >= deadline:
                 break
             batch = candidate_window[offset : offset + 4]
-            attempted += len(batch)
             self._validate_papers(batch)
             for paper in batch:
+                if deadline is not None and time.monotonic() >= deadline:
+                    break
+                considered += 1
                 if paper.access_status == "verified_pdf" and paper.full_text_url:
                     usable.append(paper)
-            if len(usable) >= limit:
-                break
-
-            for paper in batch:
-                if paper.access_status == "verified_pdf":
+                    if len(usable) >= limit:
+                        break
                     continue
-                if deadline is not None and time.monotonic() >= deadline:
+                if len(usable) >= limit:
                     break
                 try:
                     self.repository_resolver.resolve(paper)
@@ -386,24 +385,26 @@ class ResearchService:
                         break
             if len(usable) >= limit:
                 break
-        usable_ids = {paper.internal_id for paper in usable}
-        rejected = sum(
-            1
-            for paper in candidate_window[:attempted]
-            if paper.internal_id not in usable_ids
-        )
-        order = {paper.internal_id: index for index, paper in enumerate(ordered)}
-        usable.sort(key=lambda paper: order.get(paper.internal_id, len(ordered)))
+        if len(usable) < limit:
+            remaining_verified = [paper for paper in ordered[len(candidate_window):]
+                                  if paper.access_status == "verified_pdf" and paper.full_text_url]
+            self._validate_papers(remaining_verified[: limit - len(usable)])
+            usable.extend(paper for paper in remaining_verified[: limit - len(usable)]
+                          if paper.access_status == "verified_pdf" and paper.full_text_url)
+        rejected = max(0, considered - len(usable))
         return usable[:limit], rejected
 
     def _source_info(self, source: str, client: Any) -> dict[str, Any]:
         roles = {
             "oasisbr": "primary_long_form_discovery",
+            "ufscar": "direct_institutional_repository_discovery",
+            "arxiv": "rate_limited_open_preprint_fallback",
             "bdtd": "long_form_fallback",
             "openalex": "global_discovery",
             "openaire": "global_open_repository_discovery",
             "semantic_scholar": "global_fallback_and_enrichment",
             "crossref": "doi_metadata_enrichment_only",
+            "local_cache": "previously_discovered_metadata_fallback",
         }
         return {
             "configured": True,
@@ -446,7 +447,8 @@ class ResearchService:
         for result in results:
             grouped.setdefault(result.source, []).append(result)
         statuses: dict[str, Any] = {}
-        for source, client in self.clients.items():
+        for source in grouped:
+            client = self.clients.get(source)
             items = grouped.get(source, [])
             successes = [item for item in items if item.error is None]
             failures = [item for item in items if item.error is not None]
@@ -641,6 +643,9 @@ class ResearchService:
         baja_context: bool | None = None,
     ) -> dict[str, Any]:
         search_deadline = time.monotonic() + self.config.global_timeout_seconds
+        reset_budget = getattr(self.link_validator, "reset_download_budget", None)
+        if callable(reset_budget):
+            reset_budget()
         technical_focus = technical_focus or infer_technical_focus(
             original_query or " ".join(queries)
         ) or queries[0]
@@ -733,6 +738,17 @@ class ResearchService:
             exclude_electric_vehicles=exclude_electric_vehicles,
             deadline=search_deadline,
         )
+        if len(final) < limit and time.monotonic() < search_deadline:
+            local = self.storage.search_local(focus, limit=max(20, limit * 8))
+            if local:
+                source_results.append(SourceResult(source="local_cache", query=focus, papers=local, cache_hit=True))
+                final, ranked, filter_counts = self._rank_and_verify(
+                    source_results, focus=focus, queries=effective_queries,
+                    limit=limit, document_type=document_type,
+                    prefer_long_form=prefer_long_form,
+                    exclude_electric_vehicles=exclude_electric_vehicles,
+                    deadline=search_deadline,
+                )
         if len(final) < limit and time.monotonic() < search_deadline:
             fallback = self.router.search(
                 queries=effective_queries, limit=limit,

@@ -4,14 +4,21 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import hashlib
 import ipaddress
 import logging
+import re
 import socket
+import tempfile
+import threading
+import time
 from typing import Any, Callable, Iterable
 from urllib.parse import urljoin, urlparse
 
 import httpx
+from pypdf import PdfReader
+from pypdf.errors import PdfReadError
 
 from .http import USER_AGENT
 
@@ -91,7 +98,7 @@ def _unsafe_ip(value: str) -> bool:
 
 
 class PdfAccessVerifier:
-    """Confirm PDF bytes without downloading the complete document.
+    """Verify an anonymously downloaded PDF through its final byte and pages.
 
     Every initial target and redirect is checked before requesting it. A
     bibliographic landing page, DOI redirect, OA flag or HTTP 200 alone is not
@@ -104,6 +111,8 @@ class PdfAccessVerifier:
         timeout: float = 8.0,
         max_redirects: int = 5,
         sample_bytes: int = 8192,
+        max_bytes: int = 40 * 1024 * 1024,
+        max_total_bytes: int = 160 * 1024 * 1024,
         http_client: httpx.Client | None = None,
         resolver: Callable[[str, int], Iterable[str]] | None = None,
         storage: Any | None = None,
@@ -114,6 +123,10 @@ class PdfAccessVerifier:
         self.timeout = max(1.0, min(float(timeout), 30.0))
         self.max_redirects = max(0, min(int(max_redirects), 10))
         self.sample_bytes = max(512, min(int(sample_bytes), 65536))
+        self.max_bytes = max(1024, int(max_bytes))
+        self.max_total_bytes = max(self.max_bytes, int(max_total_bytes))
+        self._budget_lock = threading.Lock()
+        self._budget_remaining = self.max_total_bytes
         self._owns_client = http_client is None
         self._client = http_client or httpx.Client(
             timeout=self.timeout,
@@ -126,6 +139,18 @@ class PdfAccessVerifier:
         self.invalid_ttl_hours = max(0.0, float(invalid_ttl_hours))
         self.temporary_ttl_hours = max(0.0, float(temporary_ttl_hours))
         self._cache: dict[str, AccessCheck] = {}
+
+    def reset_download_budget(self) -> None:
+        """Start one bounded search; the plugin has one local user in this MVP."""
+        with self._budget_lock:
+            self._budget_remaining = self.max_total_bytes
+
+    def _charge(self, amount: int) -> bool:
+        with self._budget_lock:
+            if amount > self._budget_remaining:
+                return False
+            self._budget_remaining -= amount
+            return True
 
     def _target_error(self, url: str) -> tuple[str, str] | None:
         parsed = urlparse(url)
@@ -148,8 +173,21 @@ class PdfAccessVerifier:
         return None
 
     def _cached(self, url: str) -> AccessCheck | None:
-        if url in self._cache:
-            return self._cache[url]
+        local = self._cache.get(url)
+        if local is not None:
+            try:
+                age = datetime.now(timezone.utc) - datetime.fromisoformat(local.checked_at)
+            except ValueError:
+                age = timedelta.max
+            ttl = (
+                self.valid_ttl_hours if local.status == "verified_pdf"
+                else self.temporary_ttl_hours if local.status == "temporary_error"
+                else self.invalid_ttl_hours
+            )
+            if age < timedelta(hours=ttl) and (
+                local.status != "verified_pdf" or local.evidence.get("full_download")
+            ):
+                return local
         if self.storage is None:
             return None
         value = self.storage.get_access_check(
@@ -163,7 +201,7 @@ class PdfAccessVerifier:
         result = AccessCheck.from_dict(value)
         # Older versions accepted a PDF MIME header without PDF bytes. Such
         # entries must be rechecked under the stricter policy.
-        if result.status == "verified_pdf" and not result.evidence.get("pdf_magic"):
+        if result.status == "verified_pdf" and not result.evidence.get("full_download"):
             return None
         self._cache[url] = result
         return result
@@ -184,6 +222,7 @@ class PdfAccessVerifier:
 
         current = raw
         redirects: list[str] = []
+        started = time.monotonic()
         for redirect_count in range(self.max_redirects + 1):
             target_error = self._target_error(current)
             if target_error is not None:
@@ -202,8 +241,8 @@ class PdfAccessVerifier:
                     "GET",
                     current,
                     headers={
-                        "Range": f"bytes=0-{self.sample_bytes - 1}",
                         "Accept": "application/pdf,*/*;q=0.2",
+                        "Accept-Encoding": "identity",
                     },
                     follow_redirects=False,
                     timeout=self.timeout,
@@ -262,47 +301,105 @@ class PdfAccessVerifier:
                                 evidence={"redirects": redirects},
                             )
                         )
-                    sample = bytearray()
-                    for chunk in response.iter_bytes():
-                        remaining = self.sample_bytes - len(sample)
-                        if remaining <= 0:
-                            break
-                        sample.extend(chunk[:remaining])
-                        if len(sample) >= self.sample_bytes:
-                            break
-                    pdf_magic = bytes(sample).lstrip().startswith(b"%PDF-")
-                    if not pdf_magic:
-                        return self._store(
-                            AccessCheck(
-                                "invalid",
-                                raw,
-                                final_url=current,
-                                http_status=status_code,
+                    declared = response.headers.get("content-length")
+                    try:
+                        declared_size = int(declared) if declared is not None else None
+                    except ValueError:
+                        declared_size = None
+                    if declared_size is not None and declared_size > self.max_bytes:
+                        return self._store(AccessCheck(
+                            "invalid", raw, final_url=current, http_status=status_code,
+                            reason="pdf_size_limit_exceeded", evidence={"redirects": redirects},
+                        ))
+                    complete_range = None
+                    if status_code == 206:
+                        match = re.fullmatch(
+                            r"bytes\s+0-(\d+)/(\d+)",
+                            response.headers.get("content-range", "").strip(),
+                            re.IGNORECASE,
+                        )
+                        if match is None or int(match.group(1)) + 1 != int(match.group(2)):
+                            return self._store(AccessCheck(
+                                "invalid", raw, final_url=current, http_status=status_code,
+                                reason="partial_pdf_response", evidence={"redirects": redirects},
+                            ))
+                        complete_range = int(match.group(2))
+                    digest = hashlib.sha256()
+                    downloaded = 0
+                    with tempfile.SpooledTemporaryFile(max_size=4 * 1024 * 1024, mode="w+b") as pdf_file:
+                        for chunk in response.iter_bytes():
+                            if not chunk:
+                                continue
+                            downloaded += len(chunk)
+                            if downloaded > self.max_bytes:
+                                return self._store(AccessCheck(
+                                    "invalid", raw, final_url=current, http_status=status_code,
+                                    reason="pdf_size_limit_exceeded", evidence={"redirects": redirects},
+                                ))
+                            if time.monotonic() - started > self.timeout:
+                                return self._store(AccessCheck(
+                                    "temporary_error", raw, final_url=current,
+                                    reason="download_timeout", evidence={"redirects": redirects},
+                                ))
+                            if not self._charge(len(chunk)):
+                                return self._store(AccessCheck(
+                                    "temporary_error", raw, final_url=current,
+                                    reason="search_download_budget_exhausted",
+                                    evidence={"redirects": redirects},
+                                ))
+                            digest.update(chunk)
+                            pdf_file.write(chunk)
+                        if (declared_size is not None and downloaded != declared_size) or (
+                            complete_range is not None and downloaded != complete_range
+                        ):
+                            return self._store(AccessCheck(
+                                "invalid", raw, final_url=current, http_status=status_code,
+                                reason="truncated_pdf_response",
+                                evidence={"redirects": redirects, "downloaded_bytes": downloaded},
+                            ))
+                        pdf_file.seek(0)
+                        pdf_magic = pdf_file.read(5) == b"%PDF-"
+                        pdf_file.seek(max(0, downloaded - 4096))
+                        pdf_eof = b"%%EOF" in pdf_file.read()
+                        if not pdf_magic or not pdf_eof:
+                            return self._store(AccessCheck(
+                                "invalid", raw, final_url=current, http_status=status_code,
                                 content_type=content_type or None,
-                                reason="response_is_not_pdf",
-                                evidence={
-                                    "redirects": redirects,
-                                    "bytes_sampled": len(sample),
-                                    "pdf_magic": pdf_magic,
-                                },
-                            )
-                        )
-                    return self._store(
-                        AccessCheck(
-                            "verified_pdf",
-                            raw,
-                            final_url=current,
-                            http_status=status_code,
-                            content_type=content_type or None,
-                            evidence={
-                                "method": "streamed_get_pdf_magic",
-                                "redirects": redirects,
-                                "bytes_sampled": len(sample),
-                                "pdf_magic": pdf_magic,
-                                "anonymous": True,
-                            },
-                        )
-                    )
+                                reason=("response_is_not_pdf" if not pdf_magic
+                                        else "response_is_not_complete_pdf"),
+                                evidence={"redirects": redirects, "pdf_magic": pdf_magic,
+                                          "pdf_eof": pdf_eof, "downloaded_bytes": downloaded},
+                            ))
+                        pdf_file.seek(0)
+                        try:
+                            reader = PdfReader(pdf_file, strict=True)
+                            if reader.is_encrypted:
+                                raise PdfReadError("encrypted_pdf")
+                            page_count = len(reader.pages)
+                            if page_count < 1:
+                                raise PdfReadError("no_pages")
+                            reader.pages[-1]  # ensure the page tree resolves to the end
+                        except (PdfReadError, ValueError, KeyError, TypeError, OSError):
+                            return self._store(AccessCheck(
+                                "invalid", raw, final_url=current, http_status=status_code,
+                                reason="pdf_structure_invalid_or_encrypted",
+                                evidence={"redirects": redirects, "downloaded_bytes": downloaded},
+                            ))
+                    return self._store(AccessCheck(
+                        "verified_pdf", raw, final_url=current, http_status=status_code,
+                        content_type=content_type or None,
+                        evidence={
+                            "method": "anonymous_full_get_and_pdf_parse",
+                            "redirects": redirects,
+                            "downloaded_bytes": downloaded,
+                            "sha256": digest.hexdigest(),
+                            "page_count": page_count,
+                            "pdf_magic": True,
+                            "pdf_eof": True,
+                            "full_download": True,
+                            "anonymous": True,
+                        },
+                    ))
             except httpx.TimeoutException:
                 return self._store(
                     AccessCheck(
@@ -334,7 +431,7 @@ class PdfAccessVerifier:
             return {}
         results: dict[str, AccessCheck] = {}
         with ThreadPoolExecutor(
-            max_workers=min(4, len(unique)), thread_name_prefix="baja-pdf"
+            max_workers=min(3, len(unique)), thread_name_prefix="baja-pdf"
         ) as executor:
             futures = {executor.submit(self.check, url): url for url in unique}
             for future in as_completed(futures):

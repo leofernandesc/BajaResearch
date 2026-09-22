@@ -1,8 +1,8 @@
 # BAJA Research
 
 BAJA Research é um plugin standalone para o Hermes Agent que encontra
-literatura acadêmica aplicável a equipes Baja SAE. A versão 0.3.1 foi desenhada
-para uso local no terminal e no WhatsApp self-chat, com prioridade para TCCs,
+literatura acadêmica aplicável a equipes Baja SAE. A versão 0.4.0 foi desenhada
+para uso local, com ou sem Hermes, e no WhatsApp self-chat, com prioridade para TCCs,
 monografias, dissertações e teses extensas.
 
 O plugin não modifica o core do Hermes e não inclui aplicação web, FastAPI,
@@ -19,12 +19,16 @@ Um trabalho só é recomendado quando satisfaz simultaneamente estes critérios:
 - não é centrado em veículo elétrico, híbrido ou célula a combustível, salvo
   quando esse assunto for pedido explicitamente;
 - possui texto completo gratuito em PDF;
-- o plugin conseguiu abrir esse PDF anonimamente e confirmou o prefixo real
-  `%PDF-` nos bytes recebidos, não apenas o MIME.
+- o plugin baixou o PDF inteiro anonimamente, verificou `%PDF-`, `%%EOF`,
+  estrutura/páginas e registrou tamanho e hash SHA-256. PDF truncado,
+  criptografado ou login HTML não é recomendado.
 
 O usuário não precisa escrever "Baja", "PDF completo" ou "gratuito" no pedido.
-Exemplo suficiente: `Busque 3 TCCs sobre suspensão`. Nesse caso, o tipo TCC
-também é obrigatório: dissertações não ocupam suas vagas.
+Exemplos suficientes: `Busque 3 TCCs sobre suspensão` e `artigos sobre LoRa`.
+No primeiro, o tipo TCC é obrigatório: dissertações não ocupam suas vagas.
+No segundo, "artigos" significa trabalhos acadêmicos em geral, não um filtro
+que descarta TCCs. O filtro estrito de artigos só vale quando o usuário pede
+*somente artigos de periódico/conferência*.
 O modelo não consegue desativar sozinho o filtro de EV: a exceção só é aceita
 quando a pergunta original menciona explicitamente essa tecnologia.
 
@@ -40,26 +44,21 @@ adequada para este fluxo.
 ## Arquitetura
 
 ```text
-Hermes chat / gateway / WhatsApp self-chat
-                    |
-     skill + hook + 5 ferramentas
-                    |
-              SearchRouter
-       +------------+-------------+
-       |            |             |
- Oasisbr/BDTD    OpenAlex/OpenAIRE    Semantic Scholar
-  TCCs/teses       global/repos       fallback
-       +------------+-------------+
-                    |
-        Crossref: metadados por DOI
-        DSpace/Unpaywall: candidatos de PDF
-                    |
-      normalização -> deduplicação -> gates
-                    |
-       verificação anônima de PDF -> ranking
-                    |
-          SQLite persistente do Hermes
+CLI local ou Hermes (chat / WhatsApp self-chat)
+             -> motor ResearchService
+             -> rota 1: Oasisbr + UFSCar/DSpace + OpenAlex + OpenAIRE
+             -> normalização, deduplicação, gates, PDF completo verificado
+             -> se faltarem resultados válidos: rota 2
+                BDTD + Semantic Scholar + arXiv API + consultas alternativas
+             -> fallback FTS5 de metadados locais, com PDF revalidado
+             -> ranking e resposta curta + estado de cada fonte
+             -> SQLite local (diretório de dados do Hermes ou XDG no CLI)
 ```
+
+O fallback depende de **resultados relevantes e PDFs aprovados**, não do
+número bruto de hits da API. arXiv usa a API Atom oficial, com ritmo de uma
+solicitação a cada três segundos, e é apenas suplemento de preprints: não é
+fonte primária de TCCs. Não há scraping intenso de um único site.
 
 Na versão local verificada, Hermes Agent v0.20.6, a API pública usada é
 `register(ctx)`, `ctx.register_tool(...)`, `ctx.register_skill(...)`,
@@ -82,16 +81,17 @@ As cinco ferramentas são:
 
 ## Fontes e papéis
 
-1. **Oasisbr**: primeira fonte para TCCs, monografias, dissertações e teses
-   brasileiras.
-2. **BDTD**: complemento de trabalhos longos quando o Oasisbr não fornece
-   cobertura suficiente.
+1. **Oasisbr e UFSCar/DSpace direto**: descoberta de TCCs, monografias,
+   dissertações e teses brasileiras; a fonte direta reduz perda por agregador.
+2. **BDTD**: complemento de trabalhos longos quando a primeira rota não fornece
+   cobertura verificada suficiente.
 3. **OpenAlex**: descoberta acadêmica global, incluindo artigos e metadados de
    acesso aberto.
 4. **OpenAIRE**: complemento global de repositórios, com teses/dissertações e
    links candidatos para PDFs; cada link passa pela mesma checagem de bytes.
-5. **Semantic Scholar**: fallback global, citações, enriquecimento e trabalhos
-   relacionados. Uma chave opcional reduz limitações de uso.
+5. **Semantic Scholar e arXiv API**: fallback global, citações, enriquecimento,
+   relacionados e preprints abertos, respectivamente. arXiv não substitui
+   repositórios de TCCs.
 6. **Crossref**: resolução e enriquecimento bibliográfico por DOI. Não é usado
    como fonte primária de candidatos, pois licença ou link da editora não
    garantem PDF gratuito.
@@ -124,7 +124,9 @@ classe documental, o score usa
 52% de relevância técnica, 25% de contexto de aplicação, 8% de relevância da
 fonte, 5% de completude, 4% de confirmação multi-fonte, 4% de citações
 log-normalizadas e 2% de recência. Assim, citações e novidade não dominam a
-lista. A ordenação padrão coloca trabalhos longos antes de artigos; um título
+lista. Contexto Baja/Formula direto pontua mais que uma aplicação off-road
+transferível. A ordenação padrão coloca TCCs, depois outros trabalhos longos,
+depois artigos; um título
 contendo apenas a palavra “TCC” não é classificado como TCC.
 
 ## Pré-requisitos
@@ -132,6 +134,7 @@ contendo apenas a palavra “TCC” não é classificado como TCC.
 - Hermes Agent instalado e disponível como `hermes`;
 - Python 3.11 ou superior;
 - `httpx>=0.27,<1` no Python usado pelo Hermes;
+- `pypdf>=5,<7` no Python usado pelo Hermes;
 - acesso à internet para buscas reais.
 
 Não existe credencial obrigatória. Chaves opcionais melhoram limites ou
@@ -165,10 +168,12 @@ hermes plugins list --plain --no-bundled
 hermes plugins show baja-research
 ```
 
-Se o ambiente do Hermes não tiver `httpx`:
+Se o ambiente do Hermes não tiver as dependências (a instalação local verificada
+não tinha `pip` no venv):
 
 ```bash
-~/.hermes/hermes-agent/venv/bin/pip install 'httpx>=0.27,<1'
+~/.hermes/hermes-agent/venv/bin/python -m ensurepip --upgrade
+~/.hermes/hermes-agent/venv/bin/python -m pip install 'httpx>=0.27,<1' 'pypdf>=5,<7'
 ```
 
 ## Configuração
@@ -190,10 +195,12 @@ UNPAYWALL_EMAIL=
 BAJA_RESEARCH_CACHE_TTL_HOURS=24
 BAJA_RESEARCH_SOURCE_CACHE_TTL_HOURS=24
 BAJA_RESEARCH_REQUEST_TIMEOUT_SECONDS=8
-BAJA_RESEARCH_GLOBAL_TIMEOUT_SECONDS=25
+BAJA_RESEARCH_GLOBAL_TIMEOUT_SECONDS=60
 BAJA_RESEARCH_MAX_RETRIES=1
 BAJA_RESEARCH_CIRCUIT_BREAKER_SECONDS=60
-BAJA_RESEARCH_ACCESS_TIMEOUT_SECONDS=5
+BAJA_RESEARCH_ACCESS_TIMEOUT_SECONDS=20
+BAJA_RESEARCH_MAX_PDF_MB=40
+BAJA_RESEARCH_MAX_SEARCH_PDF_MB=160
 BAJA_RESEARCH_ACCESS_VALID_TTL_HOURS=1
 BAJA_RESEARCH_ACCESS_INVALID_TTL_HOURS=24
 BAJA_RESEARCH_ACCESS_TEMPORARY_TTL_HOURS=1
@@ -223,6 +230,24 @@ A suíte não depende permanentemente das APIs externas. Ela usa mocks para
 HTTP 429, 5xx, páginas HTML, PDFs, redirects privados, falha parcial, cache e
 serialização, além de cobrir DOI, títulos, merge, deduplicação, ranking, TCC
 falso, foco técnico incorreto e EV em ordem invertida.
+
+## Busca local sem Hermes
+
+O motor é independente da interface de mensagens. Para testar a mesma busca
+com uma única frase, sem depender do LLM ou do gateway:
+
+```bash
+cd /home/leofernandesc/BajaResearch
+.venv/bin/baja-research search "3 artigos sobre LoRa"
+.venv/bin/baja-research search "3 TCCs sobre suspensão" --refresh-cache
+.venv/bin/baja-research stats
+```
+
+`--json` mostra metadados e evidência técnica (páginas, bytes, SHA-256). O
+CLI usa `~/.local/share/baja-research/baja_research.sqlite3` por padrão
+(ou `XDG_DATA_HOME`), separado do banco do plugin Hermes. `--db` permite
+apontar para outro SQLite. O código de saída `1` significa nenhum trabalho
+aprovado pelos filtros; não significa que a API não respondeu.
 
 ## Smoke test real
 
@@ -273,7 +298,7 @@ Execute:
 ```bash
 hermes chat \
   -s baja-research:baja-research \
-  -q "Busque 3 TCCs sobre suspensão"
+    -q "Busque 3 TCCs sobre suspensão"
 ```
 
 A skill e o hook ajudam o Hermes a usar a ferramenta em uma chamada inicial,
@@ -327,9 +352,12 @@ compra ou landing pages. Não configure grupo, número dedicado, allowlist,
 ## Cache e dados persistentes
 
 Buscas idênticas e chamadas por fonte usam TTL independente. Evidências de PDF
-também são persistidas para evitar downloads repetidos. O schema SQLite atual
-é v2. Ao abrir um banco v1, o plugin cria uma cópia de segurança ao lado do
-banco antes de migrar; ele não apaga o banco antigo silenciosamente.
+também são persistidas para evitar downloads repetidos. Buscas vazias expiram
+em 30 minutos, não em 24 horas. O schema SQLite atual é v3 e inclui índice
+FTS5 de metadados locais. Ao abrir banco v1/v2, o plugin cria uma cópia
+consistente com a API de backup do SQLite ao lado do banco antes de migrar;
+ele não apaga o banco antigo silenciosamente. O FTS5 não prova acesso: cada
+resultado recuperado localmente passa de novo pelo gate de PDF.
 
 No perfil local atual, o arquivo fica sob:
 
@@ -357,32 +385,35 @@ de ranking e disponibilidade observada das fontes.
 - **Vieram menos trabalhos que o pedido:** os demais falharam em tema, contexto
   Baja, filtro de EV ou validação do PDF. Isso é comportamento intencional.
 - **Pedido curto de artigos retornou poucos resultados:** artigos pagos ou
-  genericamente sobre eletrônica são excluídos. Experimente pedir `TCCs sobre
-  eletrônica` se trabalhos extensos de telemetria e sistemas embarcados também
-  servirem; o plugin não troca silenciosamente o tipo pedido.
-- **Nenhum TCC:** use uma consulta técnica em português e outra em inglês. Não
-  remova o contexto Baja/Formula/off-road e não transforme o pedido em um tema
-  genérico.
+  genericamente sobre eletrônica são excluídos. `artigos sobre LoRa` já inclui
+  TCCs Baja/Formula relevantes; apenas `somente artigos de periódico` ativa o
+  filtro estrito.
+- **Nenhum TCC:** nenhum trabalho do tipo pedido passou simultaneamente pelos
+  filtros de contexto e PDF. O plugin já tenta variações português/inglês;
+  tente novamente mais tarde ou reformule o assunto técnico, se desejar.
 - **Link abre no navegador, mas foi rejeitado:** login, cookie, HTML, 403, 429
   ou redirect inseguro não comprovam acesso anônimo estável. O plugin não
   apresenta esse link como gratuito.
-- **Resultado antigo:** buscas finais e chamadas por fonte têm TTL de 24 horas.
-Use `--refresh-cache` no smoke test ou `refresh_cache=true` na ferramenta.
+- **Resultado antigo:** buscas finais e chamadas por fonte têm TTL de 24 horas
+  quando positivas; resultados vazios expiram em 30 minutos. Use
+  `--refresh-cache` no CLI/smoke test ou `refresh_cache=true` na ferramenta.
 - **Diagnóstico do gateway:** use
   `journalctl --user -u hermes-gateway.service -n 100 --no-pager` sem copiar ou
   publicar credenciais e arquivos da sessão WhatsApp.
 
 ## Limitações atuais
 
-- O plugin verifica o acesso e os primeiros bytes do PDF, mas não interpreta o
-  conteúdo integral; ainda não há processamento de PDFs ou RAG.
+- O plugin baixa e valida a estrutura do PDF inteiro, mas não lê semanticamente
+  seu conteúdo. Relevância e extensão são estimadas por metadados e número de
+  páginas; não há análise metodológica automática nem RAG.
 - A cobertura de TCCs depende dos índices Oasisbr/BDTD e dos padrões DSpace
   suportados, complementados pelo OpenAIRE. Repositórios com login, OAI-PMH indisponível ou endpoints
   desconhecidos são omitidos.
-- arXiv não foi adicionado como fonte prioritária: seu índice é mais útil
-  para preprints de artigos que para TCCs de repositórios institucionais.
-- Query expansion continua principalmente sob responsabilidade do Hermes/LLM;
-  o plugin adiciona somente salvaguardas de recuperação e aplica gates rígidos.
+- arXiv entra só no fallback de preprints e pode não ter um trabalho sobre o
+  tema específico. Nenhuma fonte única cobre todos os TCCs de Baja.
+- O plugin executa um plano pequeno de consultas por fonte mesmo sem Hermes;
+  o LLM pode fornecer consultas técnicas adicionais, mas não precisa fazê-lo
+  para pedidos curtos.
 - O ranking mede adequação à consulta, não qualidade metodológica definitiva.
   A equipe ainda deve avaliar método, dados, resultados e aplicabilidade.
 - APIs externas podem mudar, limitar ou ficar temporariamente indisponíveis.

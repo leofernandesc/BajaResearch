@@ -78,7 +78,7 @@ def test_new_access_and_repository_fields_round_trip(tmp_path):
     assert loaded.access_status == "verified_pdf"
     assert loaded.public_full_text_url().endswith("document.pdf")
     assert loaded.provenance["oasisbr"]["record_id"] == "oasis-1"
-    assert storage.stats()["schema_version"] == 2
+    assert storage.stats()["schema_version"] == 3
 
 
 def test_source_query_and_access_check_cache(tmp_path):
@@ -141,4 +141,4 @@ def test_existing_v1_database_is_backed_up_and_migrated(tmp_path):
     version = connection.execute("PRAGMA user_version").fetchone()[0]
     connection.close()
     assert {"full_text_url", "access_status", "oasisbr_id", "bdtd_id"} <= columns
-    assert version == 2
+    assert version == 3

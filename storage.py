@@ -6,18 +6,18 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
-import shutil
+import re
 import sqlite3
 import threading
 from typing import Any, Iterator, Mapping
 
 try:
-    from .models import Paper, make_internal_id, merge_papers, normalize_doi, paper_from_storage
+    from .models import Paper, make_internal_id, merge_papers, normalize_doi, normalize_title, paper_from_storage
 except ImportError:  # pragma: no cover - direct test imports
-    from models import Paper, make_internal_id, merge_papers, normalize_doi, paper_from_storage
+    from models import Paper, make_internal_id, merge_papers, normalize_doi, normalize_title, paper_from_storage
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS papers (
@@ -118,6 +118,20 @@ CREATE INDEX IF NOT EXISTS idx_access_checked_at ON access_checks(checked_at);
 
 
 _PAPER_MIGRATIONS = (
+    ("abstract", "TEXT"),
+    ("venue", "TEXT"),
+    ("authors_json", "TEXT NOT NULL DEFAULT '[]'"),
+    ("citation_count", "INTEGER"),
+    ("url", "TEXT"),
+    ("open_access_url", "TEXT"),
+    ("topics_json", "TEXT NOT NULL DEFAULT '[]'"),
+    ("sources_json", "TEXT NOT NULL DEFAULT '[]'"),
+    ("source_scores_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ("metadata_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ("ranking_score", "REAL"),
+    ("score_details_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ("created_at", "TEXT NOT NULL DEFAULT ''"),
+    ("updated_at", "TEXT NOT NULL DEFAULT ''"),
     ("document_type", "TEXT"),
     ("oasisbr_id", "TEXT"),
     ("bdtd_id", "TEXT"),
@@ -194,7 +208,9 @@ class ResearchStorage:
             return
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         backup = self.path.with_name(f"{self.path.name}.backup-v{version}-{timestamp}")
-        shutil.copy2(self.path, backup)
+        # SQLite's backup API includes committed WAL pages; a file copy may not.
+        with sqlite3.connect(str(self.path)) as source, sqlite3.connect(str(backup)) as target:
+            source.backup(target)
         self.last_backup_path = str(backup)
 
     def initialize(self) -> None:
@@ -222,18 +238,41 @@ class ResearchStorage:
                     for row in connection.execute("PRAGMA table_info(searches)").fetchall()
                 }
                 for name, definition in (
+                    ("original_query", "TEXT"),
+                    ("expanded_queries_json", "TEXT NOT NULL DEFAULT '[]'"),
+                    ("filters_json", "TEXT NOT NULL DEFAULT '{}'"),
                     ("total_found", "INTEGER NOT NULL DEFAULT 0"),
                     ("diagnostics_json", "TEXT NOT NULL DEFAULT '{}'"),
                     ("algorithm_version", "TEXT NOT NULL DEFAULT '1'"),
                 ):
                     if name not in search_columns:
                         connection.execute(f"ALTER TABLE searches ADD COLUMN {name} {definition}")
+                result_columns = {
+                    row["name"] for row in connection.execute("PRAGMA table_info(search_results)")
+                }
+                for name, definition in (
+                    ("rank", "INTEGER NOT NULL DEFAULT 0"),
+                    ("score", "REAL"),
+                    ("score_details_json", "TEXT NOT NULL DEFAULT '{}'"),
+                    ("sources_json", "TEXT NOT NULL DEFAULT '[]'"),
+                ):
+                    if name not in result_columns:
+                        connection.execute(f"ALTER TABLE search_results ADD COLUMN {name} {definition}")
                 connection.execute(
                     "UPDATE searches SET total_found=result_count WHERE total_found=0"
                 )
                 for statement in SCHEMA.split(";"):
                     if "CREATE INDEX" in statement and statement.strip():
                         connection.execute(statement)
+                connection.execute(
+                    "CREATE VIRTUAL TABLE IF NOT EXISTS papers_fts USING "
+                    "fts5(internal_id UNINDEXED, title, abstract, topics, tokenize='unicode61 remove_diacritics 2')"
+                )
+                if int(connection.execute("SELECT COUNT(*) FROM papers_fts").fetchone()[0]) == 0:
+                    connection.execute(
+                        "INSERT INTO papers_fts(internal_id,title,abstract,topics) "
+                        "SELECT internal_id,title,COALESCE(abstract,''),topics_json FROM papers"
+                    )
                 connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     @staticmethod
@@ -336,7 +375,27 @@ class ResearchStorage:
                         self._paper_params(incoming, created_at=now, updated_at=now),
                     )
                     stored.append(incoming)
+                indexed = stored[-1]
+                connection.execute("DELETE FROM papers_fts WHERE internal_id=?", (indexed.internal_id,))
+                connection.execute(
+                    "INSERT INTO papers_fts(internal_id,title,abstract,topics) VALUES (?,?,?,?)",
+                    (indexed.internal_id, indexed.title, indexed.abstract or "", " ".join(indexed.topics)),
+                )
         return stored
+
+    def search_local(self, technical_focus: str, *, limit: int = 30) -> list[Paper]:
+        """Find previous normalized candidates; callers must recheck PDFs."""
+        words = [word for word in re.findall(r"[\w]+", normalize_title(technical_focus)) if len(word) >= 2]
+        if not words:
+            return []
+        expression = " OR ".join(f'"{word}"' for word in words[:4])
+        with self._lock, self._connection() as connection:
+            rows = connection.execute(
+                "SELECT p.* FROM papers_fts f JOIN papers p ON p.internal_id=f.internal_id "
+                "WHERE papers_fts MATCH ? ORDER BY bm25(papers_fts) LIMIT ?",
+                (expression, max(1, min(int(limit), 100))),
+            ).fetchall()
+            return [paper_from_storage(row) for row in rows]
 
     def save_search(
         self,
@@ -423,7 +482,8 @@ class ResearchStorage:
                 created_at = datetime.fromisoformat(row["created_at"])
             except (TypeError, ValueError):
                 return None
-            if created_at < threshold:
+            if created_at < threshold or (int(row["result_count"] or 0) == 0 and
+                created_at < datetime.now(timezone.utc) - timedelta(minutes=30)):
                 return None
             result_rows = connection.execute(
                 """SELECT p.*, sr.rank AS result_rank, sr.score AS result_score,
@@ -492,7 +552,8 @@ class ResearchStorage:
                 created_at = datetime.fromisoformat(row["created_at"])
             except (TypeError, ValueError):
                 return None
-            if created_at < threshold:
+            if created_at < threshold or (not _loads(row["papers_json"], []) and
+                created_at < datetime.now(timezone.utc) - timedelta(minutes=30)):
                 return None
             return {
                 "papers": [Paper.from_dict(item) for item in _loads(row["papers_json"], [])],
@@ -608,6 +669,7 @@ class ResearchStorage:
                 "SELECT COUNT(*) FROM source_query_cache"
             ).fetchone()[0]
             access_checks = connection.execute("SELECT COUNT(*) FROM access_checks").fetchone()[0]
+            fts_papers = connection.execute("SELECT COUNT(*) FROM papers_fts").fetchone()[0]
             last = connection.execute(
                 "SELECT created_at, source_status_json FROM searches ORDER BY id DESC LIMIT 1"
             ).fetchone()
@@ -620,6 +682,7 @@ class ResearchStorage:
                 "search_results_cached": int(results),
                 "source_queries_cached": int(source_queries),
                 "access_checks_cached": int(access_checks),
+                "papers_fts_indexed": int(fts_papers),
                 "last_search_at": last["created_at"] if last else None,
                 "last_source_status": _loads(last["source_status_json"], {}) if last else {},
             }

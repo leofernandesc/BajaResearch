@@ -11,6 +11,7 @@ import pytest
 from clients.link_validator import PdfAccessVerifier
 from models import Paper, is_long_form_document
 from ranking import filter_relevant_papers, is_electric_vehicle_paper
+from tests.pdf_bytes import PDF_BYTES
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "quality_regressions.json"
@@ -99,10 +100,11 @@ def test_quality_fixture_uses_production_pdf_verifier(case: dict) -> None:
             )
         content_type = case.get("response_content_type", "text/html")
         prefix = case.get("response_prefix", "<html>login required</html>")
+        content = PDF_BYTES if case["expected"] == "accept_free_pdf" else prefix.encode("utf-8")
         return httpx.Response(
             case.get("response_status", 200),
             headers={"Content-Type": content_type},
-            content=prefix.encode("utf-8"),
+            content=content,
             request=request,
         )
 

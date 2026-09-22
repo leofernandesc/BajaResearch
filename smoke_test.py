@@ -8,7 +8,8 @@ from pathlib import Path
 import sys
 
 from storage import ResearchStorage
-from tools import ResearchConfig, ResearchService
+from config import config_from_env
+from tools import ResearchService
 
 
 DEFAULT_QUERY = "telemetry data acquisition Formula SAE"
@@ -56,12 +57,13 @@ def main() -> int:
     args = parser.parse_args()
     queries = args.query or [DEFAULT_QUERY]
     service = ResearchService(
-        config=ResearchConfig(),
+        config=config_from_env(),
         storage=ResearchStorage(args.db),
     )
     try:
         response = service.search(
             queries=queries,
+            original_query=queries[0],
             technical_focus=args.technical_focus,
             document_type=args.document_type,
             limit=args.limit,

@@ -1,7 +1,7 @@
 ---
 name: baja-research
 description: "Find free, verified, technically relevant academic work for Baja SAE teams."
-version: 0.3.1
+version: 0.4.0
 author: Leonardo Fernandes Cavalcante
 license: MIT
 metadata:
@@ -23,7 +23,7 @@ search workflow, not a general web search.
 
 - Recommend only records returned by BAJA Research with
   `access_status=verified_pdf`, a `full_text_url`, and anonymous PDF access
-  verified by the plugin. A DOI, an open-access label, or a publisher landing
+  verified by a complete download and PDF parse. A DOI, an open-access label, or a publisher landing
   page alone is not sufficient.
 - Every recommendation must match both the requested technical focus and a
   Baja SAE, Mini Baja, Formula SAE/Formula Student, ATV, or off-road vehicle
@@ -41,32 +41,24 @@ search workflow, not a general web search.
 
 ## Required search workflow
 
-1. Identify the technical area, phenomenon or problem, vehicle application,
-   and useful academic vocabulary in the user's request.
-2. Optionally create a short `technical_focus` that contains the actual subject without
-   generic context words. Examples: `suspension geometry optimization`,
-   `chassis fatigue finite element analysis`, or
-   `telemetry data acquisition sensors CAN`.
-3. Build a few complementary queries when useful. A single short query is valid:
-   the plugin adds concise Baja/Portuguese/English variants automatically. Use English
-   technical terminology when useful, but include Portuguese repository terms
-   when they can retrieve Brazilian TCCs. Start narrow and broaden carefully:
-   Baja SAE or Mini Baja, then Formula SAE/Formula Student, ATV/off-road, and
-   finally the relevant vehicle-engineering domain. Do not broaden away from
-   the requested technical focus.
-4. Call `search_academic_papers` once with the query list and requested final
-   `limit`. `technical_focus` is optional. When the user explicitly asks for
-   TCCs, set `document_type=bachelor_thesis`; for articles, set
-   `document_type=articles`. The plugin also infers these from the query.
-   The limit is the final number of
-   recommendations, not the number requested from each source.
-5. Use `document_preference=articles_first` only when the user explicitly
+1. Identify the technical focus and how many works the user wants.
+2. Call `search_academic_papers` once with `request` equal to the user's exact
+   message and `limit` equal to the requested count. This is enough even for
+   `artigos sobre LoRa`: Baja context, bilingual variants, source routing,
+   TCC priority and PDF verification are handled by the plugin. Do not call
+   `tool_search`, `tool_describe`, or repeat searches just to compensate for a
+   short message. An advanced user may supply `queries` instead.
+3. A request for TCCs is a strict TCC filter. The everyday word `artigos`
+   means academic works generally; use `document_type=articles` only when the
+   user explicitly demands journal/conference articles only. The limit is the
+   final number of recommendations, not the number pulled from each source.
+4. Use `document_preference=articles_first` only when the user explicitly
    prioritizes articles. Keep `exclude_electric_vehicles=true` unless the user
    explicitly asks for EV, hybrid, battery, or fuel-cell literature.
-6. Inspect the returned `policy`, `sources`, `warnings`, `filters_applied`, and
+5. Inspect the returned `policy`, `sources`, `warnings`, `filters_applied`, and
    each record's access fields. Never recover a rejected URL from raw metadata
    or from memory.
-7. Use `get_paper` for a known item, `find_related_papers` for follow-up
+6. Use `get_paper` for a known item, `find_related_papers` for follow-up
    discovery, `format_citation` for ABNT/BibTeX, and
    `research_cache_stats` for diagnostics.
 
@@ -81,7 +73,9 @@ by default, even when the tool found more. For each work, show only source data:
 4. document type and institution or venue, when returned;
 5. DOI, when returned;
 6. the verified free-PDF link from `full_text_url`;
-7. one short sentence explaining why it is relevant. Mark that final sentence
+7. page count from `access_verification.page_count` when available; explicitly
+   call a two- or three-page work short rather than presenting it as detailed;
+8. one short sentence explaining why it is relevant. Mark that final sentence
    as your interpretation rather than bibliographic metadata.
 
 Do not paste complete abstracts. State how many additional qualifying results

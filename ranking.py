@@ -13,7 +13,7 @@ except ImportError:  # pragma: no cover
     from models import Paper, is_long_form_document, normalize_title
 
 
-RANKING_VERSION = "3"
+RANKING_VERSION = "5"
 TECHNICAL_RELEVANCE_THRESHOLD = 0.30
 FOCUS_RELEVANCE_THRESHOLD = 0.15
 APPLICATION_CONTEXT_THRESHOLD = 0.70
@@ -75,6 +75,7 @@ _STRONG_CONTEXT_TERMS = {
     "baja sae", "sae baja", "mini baja", "formula sae", "formula student",
     "off road", "offroad", "all terrain vehicle", "all terrain vehicles", "atv",
 }
+_DIRECT_COMPETITION_TERMS = {"baja sae", "sae baja", "mini baja", "formula sae", "formula student"}
 _MOTORSPORT_TERMS = {"motorsport", "race car", "racing car", "racing vehicle", "competition vehicle"}
 _GENERAL_VEHICLE_TERMS = {"automotive", "vehicle dynamics", "ground vehicle"}
 _ELECTRIC_VEHICLE_TERMS = {
@@ -177,13 +178,22 @@ def application_context_signal(paper: Paper) -> float:
     haystack = normalize_title(
         " ".join([paper.title, paper.abstract or "", paper.venue or "", *paper.topics])
     )
+    direct = sum(1 for term in _DIRECT_COMPETITION_TERMS if _contains_term(haystack, term))
+    if direct:
+        return 1.0
+    title_topics = normalize_title(" ".join([paper.title, *paper.topics]))
+    if _contains_term(title_topics, "baja") and any(
+        _contains_term(title_topics, term)
+        for term in ("veiculo", "veiculos", "vehicle", "vehicles", "carro", "car", "competicao", "competition", "telemetry", "telemetria")
+    ):
+        return 0.95
     matches = sum(
         1 for term in _STRONG_CONTEXT_TERMS if _contains_term(haystack, term)
     )
     if matches:
-        return min(1.0, 0.80 + 0.10 * (matches - 1))
+        return min(0.90, 0.80 + 0.05 * (matches - 1))
     if any(_contains_term(haystack, term) for term in _MOTORSPORT_TERMS):
-        return 0.70
+        return 0.85
     general = sum(
         1 for term in _GENERAL_VEHICLE_TERMS if _contains_term(haystack, term)
     )

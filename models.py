@@ -22,6 +22,8 @@ _DOI_PREFIX_RE = re.compile(
     r"^(?:https?://)?(?:dx\.)?doi\.org/|^doi:\s*", re.IGNORECASE
 )
 _SOURCE_PRIORITY = {
+    "ufscar": 7,
+    "arxiv": 2,
     "oasisbr": 6,
     "bdtd": 6,
     "openalex": 4,
@@ -357,7 +359,7 @@ class Paper:
         elif self.access_evidence:
             result["access_verification"] = {
                 key: self.access_evidence[key]
-                for key in ("method", "anonymous", "pdf_magic", "bytes_sampled")
+                for key in ("method", "anonymous", "full_download", "page_count", "downloaded_bytes", "sha256", "pdf_magic", "pdf_eof")
                 if key in self.access_evidence
             }
         if self.ranking_score is not None:

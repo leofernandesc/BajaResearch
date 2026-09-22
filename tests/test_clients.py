@@ -1,6 +1,7 @@
 import httpx
 
 from clients.base import SourceError
+from tests.pdf_bytes import PDF_BYTES
 from clients.bdtd import BdtdClient
 from clients.crossref import CrossrefClient
 from clients.http import JsonHttpClient
@@ -426,9 +427,9 @@ def test_pdf_verifier_rejects_dead_link_and_accepts_pdf_bytes():
         if request.url.path == "/dead":
             return httpx.Response(404, request=request)
         return httpx.Response(
-            206,
+            200,
             headers={"Content-Type": "application/pdf"},
-            content=b"%PDF-1.7 test",
+            content=PDF_BYTES,
             request=request,
         )
 
@@ -445,7 +446,9 @@ def test_pdf_verifier_rejects_dead_link_and_accepts_pdf_bytes():
     assert dead.status == "invalid"
     assert dead.http_status == 404
     assert live.status == "verified_pdf"
-    assert live.http_status == 206
+    assert live.http_status == 200
+    assert live.evidence["full_download"] is True
+    assert live.evidence["page_count"] == 2
     assert ("GET", "https://example.test/live") in calls
 
 
@@ -542,7 +545,7 @@ def test_pdf_verification_evidence_is_reused_from_sqlite(tmp_path):
         return httpx.Response(
             200,
             headers={"Content-Type": "application/pdf"},
-            content=b"%PDF-1.7 cached",
+            content=PDF_BYTES,
             request=request,
         )
 
