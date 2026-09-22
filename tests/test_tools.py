@@ -5,6 +5,7 @@ from models import Paper
 from clients.link_validator import AccessCheck
 from storage import ResearchStorage
 from tools import ResearchConfig, ResearchService, build_tool_handlers
+from schemas import SEARCH_SCHEMA, validate_search_args
 
 
 class FakeClient:
@@ -81,10 +82,41 @@ def test_invalid_tool_arguments_are_structured():
     response = json.loads(handlers["search_academic_papers"]({"queries": []}))
     assert response["ok"] is False
     assert response["error"]["code"] == "invalid_arguments"
-    missing_focus = json.loads(
-        handlers["search_academic_papers"]({"queries": ["Baja SAE chassis"]})
+    assert "technical_focus" not in SEARCH_SCHEMA["parameters"]["required"]
+    parsed = validate_search_args({"queries": ["3 TCCs sobre suspensão"]})
+    assert parsed["technical_focus"] == "suspensao"
+
+
+def test_short_request_implies_baja_and_free_pdf(tmp_path):
+    paper = Paper(
+        "", "Projeto de suspensão para Baja SAE", document_type="bachelor_thesis",
+        open_access_url="https://repository.example/tcc.pdf", sources=["oasisbr"],
     )
-    assert missing_focus["error"]["code"] == "invalid_arguments"
+    client = FakeClient()
+    client.papers = [paper]
+    service = ResearchService(
+        config=ResearchConfig(cache_ttl_hours=0),
+        storage=ResearchStorage(tmp_path / "cache.sqlite3"),
+        clients={"oasisbr": client},
+        link_validator=AcceptAllPdfVerifier(),
+    )
+    handlers = {name: handler for name, _schema, handler, _description in build_tool_handlers(service)}
+    result = json.loads(handlers["search_academic_papers"]({"queries": ["3 TCCs sobre suspensão"], "limit": 3, "document_type": "bachelor_thesis"}))
+    assert result["returned"] == 1
+    assert result["results"][0]["access_status"] == "verified_pdf"
+    assert result["filters"]["baja_context_required"] is True
+    assert result["filters"]["document_type"] == "bachelor_thesis"
+    assert "Baja SAE suspensão" in result["queries"]
+
+
+def test_only_requested_tcc_type_is_returned(tmp_path):
+    tcc = Paper("", "Projeto de suspensão Baja SAE", document_type="bachelor_thesis", open_access_url="https://repo.example/tcc.pdf", sources=["oasisbr"])
+    dissertation = Paper("", "Análise de suspensão Baja SAE", document_type="master_thesis", open_access_url="https://repo.example/masters.pdf", sources=["bdtd"])
+    client = FakeClient()
+    client.papers = [tcc, dissertation]
+    service = ResearchService(config=ResearchConfig(cache_ttl_hours=0), storage=ResearchStorage(tmp_path / "cache.sqlite3"), clients={"oasisbr": client}, link_validator=AcceptAllPdfVerifier())
+    result = service.search(queries=["suspensão"], document_type="bachelor_thesis", limit=3)
+    assert [paper["document_type"] for paper in result["results"]] == ["bachelor_thesis"]
 
 
 def test_broad_query_gets_baja_and_thesis_retrieval_variants(tmp_path):
@@ -376,6 +408,65 @@ def test_preverified_pdf_survives_expired_search_budget(tmp_path):
     )
     assert selected == [paper]
     assert rejected == 0
+
+
+def test_preverified_pdf_outside_candidate_window_survives_expired_budget(tmp_path):
+    blockers = [
+        Paper("", f"Baja SAE suspensão {index}", document_type="bachelor_thesis")
+        for index in range(12)
+    ]
+    verified = Paper(
+        "", "Projeto de suspensão dianteira Baja SAE", document_type="bachelor_thesis",
+        full_text_url="https://repository.example/verified.pdf", access_status="verified_pdf",
+    )
+    service = ResearchService(
+        storage=ResearchStorage(tmp_path / "cache.sqlite3"),
+        clients={}, link_validator=AcceptAllPdfVerifier(),
+    )
+    selected, _ = service._select_final_papers(
+        [*blockers, verified], limit=2, open_access_only=True,
+        prefer_long_form=True, deadline=time.monotonic() - 1,
+    )
+    assert selected == [verified]
+
+
+def test_previous_verified_tccs_are_reused_before_repository_requests(tmp_path):
+    storage = ResearchStorage(tmp_path / "cache.sqlite3")
+    originals = [
+        Paper("", f"Projeto de suspensão {part} Baja SAE", document_type="bachelor_thesis",
+              oasisbr_id=f"oasis-{part}", year=2022,
+              full_text_url=f"https://repository.example/{part}.pdf",
+              access_status="verified_pdf", sources=["oasisbr"])
+        for part in ("dianteira", "traseira", "independente")
+    ]
+    storage.upsert_papers(originals)
+    client = FakeClient()
+    client.papers = [
+        Paper("", item.title, document_type="bachelor_thesis",
+              oasisbr_id=item.oasisbr_id, landing_url="https://repository.example/item",
+              sources=["oasisbr"])
+        for item in originals
+    ]
+
+    class FailIfResolved:
+        calls = 0
+
+        def resolve(self, paper):
+            self.calls += 1
+            raise AssertionError("known PDFs should be reused")
+
+        def close(self):
+            pass
+
+    resolver = FailIfResolved()
+    service = ResearchService(
+        config=ResearchConfig(cache_ttl_hours=0), storage=storage,
+        clients={"oasisbr": client}, link_validator=AcceptAllPdfVerifier(),
+        repository_resolver=resolver,
+    )
+    result = service.search(queries=["suspensão"], document_type="bachelor_thesis", limit=3)
+    assert result["returned"] == 3
+    assert resolver.calls == 0
 
 
 def test_long_form_verified_work_is_listed_before_article(tmp_path):

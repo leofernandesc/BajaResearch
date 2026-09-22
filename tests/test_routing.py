@@ -12,10 +12,12 @@ class CountingClient:
         self.papers = list(papers or [])
         self.error = error
         self.search_calls = 0
+        self.queries = []
         self.get_calls = 0
 
     def search(self, query, **kwargs):
         self.search_calls += 1
+        self.queries.append(query)
         if self.error:
             raise self.error
         return self.papers
@@ -139,4 +141,22 @@ def test_query_expansion_adds_focus_context_when_llm_queries_are_overconstrained
         prefer_theses=True,
         technical_focus="suspension geometry optimization",
     )
-    assert expanded[0] == "Baja SAE suspension geometry optimization"
+    assert "Baja SAE suspension" in expanded
+    assert "Baja SAE suspensão" in expanded
+
+
+def test_repository_query_uses_portuguese_topic_without_pdf_keywords(tmp_path):
+    oasis = CountingClient()
+    openalex = CountingClient()
+    router = SearchRouter(
+        clients={"oasisbr": oasis, "openalex": openalex},
+        storage=ResearchStorage(tmp_path / "research.sqlite3"),
+    )
+    queries = expand_plugin_queries(
+        ['"Baja SAE" "suspensão" "PDF" "repositório"'],
+        baja_context=True, prefer_theses=True,
+        technical_focus="suspension geometry optimization finite element analysis",
+    )
+    router.search(queries=queries, limit=3, year_from=None, year_to=None, prefer_long_form=True)
+    assert oasis.queries[0] == "Baja SAE suspensão"
+    assert openalex.queries[0] == "Baja SAE suspension"

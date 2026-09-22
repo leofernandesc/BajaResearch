@@ -430,6 +430,23 @@ def test_pdf_verifier_rejects_publisher_html_landing_page():
     assert result.reason == "response_is_not_pdf"
 
 
+def test_pdf_verifier_rejects_html_mislabeled_as_pdf():
+    def handler(request):
+        return httpx.Response(
+            200, headers={"Content-Type": "application/pdf"},
+            content=b"<html>Access denied</html>", request=request,
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    verifier = LinkValidator(http_client=client, resolver=lambda _host, _port: ["8.8.8.8"])
+    try:
+        result = verifier.check("https://repository.example/document.pdf")
+    finally:
+        client.close()
+    assert result.status == "invalid"
+    assert result.reason == "response_is_not_pdf"
+
+
 def test_pdf_verifier_blocks_private_redirect_target():
     calls = []
 
