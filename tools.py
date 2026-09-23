@@ -37,6 +37,7 @@ try:
     from .routing import SearchRouter
     from .ranking import (
         application_context_signal,
+        direct_competition_signal,
         filter_relevant_papers,
         is_electric_vehicle_paper,
         partition_search_papers,
@@ -75,7 +76,7 @@ except ImportError:  # pragma: no cover - direct module imports
     from models import Paper, deduplicate_papers, is_long_form_document, merge_papers, normalize_doi
     from querying import expand_plugin_queries, infer_document_type, infer_technical_focus, requests_electric_vehicle
     from routing import SearchRouter
-    from ranking import RANKING_VERSION, application_context_signal, filter_relevant_papers, is_electric_vehicle_paper, partition_search_papers, rank_papers, technical_relevance_signal
+    from ranking import RANKING_VERSION, application_context_signal, direct_competition_signal, filter_relevant_papers, is_electric_vehicle_paper, partition_search_papers, rank_papers, technical_relevance_signal
     from schemas import (
         CITATION_SCHEMA,
         GET_PAPER_SCHEMA,
@@ -329,6 +330,14 @@ class ResearchService:
         theses = [paper for paper in ranked if paper.document_type == "bachelor_thesis"]
         long_form = [paper for paper in ranked if is_long_form_document(paper.document_type) and paper.document_type != "bachelor_thesis"]
         articles = [paper for paper in ranked if not is_long_form_document(paper.document_type)]
+        def direct_first(group: list[Paper]) -> list[Paper]:
+            # Python's stable sort preserves relevance ranking inside each
+            # context tier; application specificity is the primary tie-break.
+            return sorted(group, key=lambda paper: not direct_competition_signal(paper))
+
+        theses = direct_first(theses)
+        long_form = direct_first(long_form)
+        articles = direct_first(articles)
         ordered = [*theses, *long_form, *articles] if prefer_long_form else [*articles, *theses, *long_form]
         if not open_access_only:
             final = ordered[:limit]
@@ -817,9 +826,13 @@ class ResearchService:
             )
         approved_ids = {paper.internal_id for paper in final}
         review_ranked = [paper for paper in review_ranked if paper.internal_id not in approved_ids]
+        # The five confirmed works have priority. Give the separately labeled
+        # review tier a small bounded window after that budget so a slow PDF
+        # for an approved work does not silently erase transferable leads.
+        review_deadline = search_deadline + 15.0 if review_ranked else search_deadline
         review_final, _ = self._select_final_papers(
             review_ranked, limit=5, open_access_only=True,
-            prefer_long_form=prefer_long_form, deadline=search_deadline,
+            prefer_long_form=prefer_long_form, deadline=review_deadline,
         )
         review_final = self.storage.upsert_papers(review_final)
         statuses = self._aggregate_statuses(source_results)

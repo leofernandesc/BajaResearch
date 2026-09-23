@@ -28,7 +28,7 @@ def test_direct_query_match_beats_high_citation_off_topic_paper():
     ranked = rank_papers([famous, direct], ["Baja SAE suspension optimization"], current_year=2026)
     assert ranked[0].title == direct.title
     assert set(ranked[0].score_details) == {
-        "technical_relevance", "focus_relevance", "application_context", "source_relevance",
+        "technical_relevance", "focus_relevance", "application_context", "direct_competition_context", "source_relevance",
         "completeness", "multi_source", "citation_signal", "recency_signal",
         "long_form", "passes_technical_gate", "passes_context_gate",
     }

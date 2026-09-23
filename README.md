@@ -323,6 +323,12 @@ ao Baja ou foco técnico ainda incerto; não são apresentados como recomendaç�
 Ambos os grupos exigem PDF completo, gratuito e verificado anonimamente.
 Uma menção ao tema no resumo também pode comprovar o foco técnico, mesmo se
 o título for mais genérico. O agente não completa vagas com dados inventados.
+Depois da busca principal, a verificação dos candidatos para avaliar recebe
+um orçamento-alvo adicional de 15 segundos; esse grupo pode ter menos de
+cinco itens ou ficar vazio se não houver PDFs válidos ou tempo suficiente.
+Dentro de cada tipo de documento, trabalhos com contexto Baja/Formula explícito
+têm prioridade sobre aplicações off-road mais indiretas; a pontuação técnica
+continua disponível para auditoria.
 
 Para um teste de eletrônica que preserve a aplicação correta:
 

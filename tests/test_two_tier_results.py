@@ -100,3 +100,22 @@ def test_abstract_only_lora_in_generic_iot_is_not_a_review_candidate(tmp_path):
     )
     result = service.search(queries=["artigos sobre LoRa"], original_query="artigos sobre LoRa")
     assert result["review_returned"] == 0
+
+
+def test_direct_formula_work_precedes_indirect_offroad_article(tmp_path):
+    indirect = Paper("", "LoRa navigation on an off-road mountain vehicle",
+                     document_type="journal_article", ranking_score=0.9,
+                     open_access_url="https://example.org/mountain.pdf")
+    direct = Paper("", "Student Formula Cars and All-terrain vehicles telemetry",
+                   abstract="The telemetry uses LoRa transceivers.",
+                   document_type="journal_article", ranking_score=0.5,
+                   open_access_url="https://example.org/formula.pdf")
+    service = ResearchService(
+        storage=ResearchStorage(tmp_path / "research.sqlite3"),
+        clients={"openalex": Source([])}, link_validator=Verifier(),
+    )
+    selected, _ = service._select_final_papers(
+        [indirect, direct], limit=1, open_access_only=True,
+        prefer_long_form=True,
+    )
+    assert [paper.title for paper in selected] == [direct.title]

@@ -13,7 +13,7 @@ except ImportError:  # pragma: no cover
     from models import Paper, is_long_form_document, normalize_title
 
 
-RANKING_VERSION = "6"
+RANKING_VERSION = "7"
 # An exact mention in an abstract contributes 0.25. Do not throw away a
 # repository TCC merely because its title describes the broader subsystem.
 TECHNICAL_RELEVANCE_THRESHOLD = 0.25
@@ -77,7 +77,10 @@ _STRONG_CONTEXT_TERMS = {
     "baja sae", "sae baja", "mini baja", "formula sae", "formula student",
     "off road", "offroad", "all terrain vehicle", "all terrain vehicles", "atv",
 }
-_DIRECT_COMPETITION_TERMS = {"baja sae", "sae baja", "mini baja", "formula sae", "formula student"}
+_DIRECT_COMPETITION_TERMS = {
+    "baja sae", "sae baja", "mini baja", "formula sae", "formula student",
+    "student formula car", "student formula cars", "formula racing car",
+}
 _MOTORSPORT_TERMS = {"motorsport", "race car", "racing car", "racing vehicle", "competition vehicle"}
 _GENERAL_VEHICLE_TERMS = {"automotive", "vehicle dynamics", "ground vehicle"}
 _ELECTRIC_VEHICLE_TERMS = {
@@ -202,6 +205,12 @@ def application_context_signal(paper: Paper) -> float:
     return min(0.60, 0.30 * general)
 
 
+def direct_competition_signal(paper: Paper) -> bool:
+    """A Baja/Formula project outranks generic off-road transfer material."""
+    haystack = normalize_title(" ".join([paper.title, paper.abstract or "", *paper.topics]))
+    return any(_contains_term(haystack, term) for term in _DIRECT_COMPETITION_TERMS)
+
+
 def technical_relevance_signal(
     paper: Paper, technical_focus: str, queries: Iterable[str]
 ) -> float:
@@ -277,6 +286,7 @@ def quality_signals(
         ),
         "focus_relevance": technical_relevance_signal(paper, technical_focus, ()),
         "application_context": application_context_signal(paper),
+        "direct_competition_context": 1.0 if direct_competition_signal(paper) else 0.0,
         "source_relevance": _source_relevance(paper),
         "completeness": _completeness_signal(paper),
         "multi_source": min(1.0, max(0, len(set(paper.sources)) - 1) / 2.0),
@@ -425,6 +435,7 @@ __all__ = [
     "RANKING_VERSION",
     "TECHNICAL_RELEVANCE_THRESHOLD",
     "application_context_signal",
+    "direct_competition_signal",
     "electric_vehicle_signal",
     "filter_relevant_papers",
     "partition_search_papers",
