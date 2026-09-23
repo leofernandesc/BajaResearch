@@ -19,6 +19,7 @@ try:
     from .clients.oasisbr import OasisbrClient
     from .clients.openalex import OpenAlexClient
     from .clients.openaire import OpenAIREClient
+    from .clients.ojs import OjsPublisherResolver
     from .clients.repositories import RepositoryResolver
     from .clients.semantic_scholar import SemanticScholarClient
     from .clients.unpaywall import UnpaywallClient
@@ -38,6 +39,7 @@ try:
         application_context_signal,
         filter_relevant_papers,
         is_electric_vehicle_paper,
+        partition_search_papers,
         RANKING_VERSION,
         rank_papers,
         technical_relevance_signal,
@@ -63,6 +65,7 @@ except ImportError:  # pragma: no cover - direct module imports
     from clients.oasisbr import OasisbrClient
     from clients.openalex import OpenAlexClient
     from clients.openaire import OpenAIREClient
+    from clients.ojs import OjsPublisherResolver
     from clients.repositories import RepositoryResolver
     from clients.semantic_scholar import SemanticScholarClient
     from clients.unpaywall import UnpaywallClient
@@ -72,7 +75,7 @@ except ImportError:  # pragma: no cover - direct module imports
     from models import Paper, deduplicate_papers, is_long_form_document, merge_papers, normalize_doi
     from querying import expand_plugin_queries, infer_document_type, infer_technical_focus, requests_electric_vehicle
     from routing import SearchRouter
-    from ranking import RANKING_VERSION, application_context_signal, filter_relevant_papers, is_electric_vehicle_paper, rank_papers, technical_relevance_signal
+    from ranking import RANKING_VERSION, application_context_signal, filter_relevant_papers, is_electric_vehicle_paper, partition_search_papers, rank_papers, technical_relevance_signal
     from schemas import (
         CITATION_SCHEMA,
         GET_PAPER_SCHEMA,
@@ -88,7 +91,7 @@ except ImportError:  # pragma: no cover - direct module imports
 
 
 logger = logging.getLogger(__name__)
-SEARCH_ALGORITHM_VERSION = f"ranking-{RANKING_VERSION}-adaptive-4"
+SEARCH_ALGORITHM_VERSION = f"ranking-{RANKING_VERSION}-adaptive-5"
 
 
 def _cache_key(queries: list[str], filters: Mapping[str, Any]) -> str:
@@ -115,6 +118,7 @@ class ResearchService:
         clients: Mapping[str, Any] | None = None,
         link_validator: LinkValidator | None = None,
         repository_resolver: RepositoryResolver | None = None,
+        publisher_resolver: OjsPublisherResolver | None = None,
         unpaywall_client: UnpaywallClient | None = None,
         router: SearchRouter | None = None,
     ) -> None:
@@ -172,6 +176,10 @@ class ResearchService:
             self.link_validator,
             timeout=self.config.access_timeout_seconds,
         )
+        self.publisher_resolver = publisher_resolver or OjsPublisherResolver(
+            self.link_validator,
+            timeout=self.config.request_timeout_seconds,
+        )
         self.unpaywall_client = unpaywall_client or UnpaywallClient(
             email=self.config.unpaywall_email,
             timeout=self.config.request_timeout_seconds,
@@ -205,6 +213,7 @@ class ResearchService:
                     logger.debug("source client close failed", exc_info=True)
         self.link_validator.close()
         self.repository_resolver.close()
+        self.publisher_resolver.close()
         self.unpaywall_client.close()
 
     def _validate_papers(self, papers: list[Paper]) -> None:
@@ -277,6 +286,7 @@ class ResearchService:
     @staticmethod
     def _filter_search_candidates(
         papers: list[Paper],
+        review_papers: list[Paper] | None = None,
         *,
         open_access_only: bool,
         exclude_electric_vehicles: bool,
@@ -503,6 +513,7 @@ class ResearchService:
         queries: list[str],
         filters: Mapping[str, Any],
         papers: list[Paper],
+        review_papers: list[Paper] | None = None,
         total_found: int,
         statuses: Mapping[str, Any],
         cache_hit: bool,
@@ -523,6 +534,12 @@ class ResearchService:
             "total_found": total_found,
             "returned": len(papers),
             "results": [paper.to_dict(compact=True) for paper in papers],
+            "review_returned": len(review_papers or []),
+            "review_candidates": [
+                {**paper.to_dict(compact=True),
+                 "review_reason": paper.metadata.get("review_reason")}
+                for paper in (review_papers or [])
+            ],
             "sources": dict(statuses),
             "warnings": warnings,
             "policy": {
@@ -536,6 +553,8 @@ class ResearchService:
                     "document_preference", "long_form_first"
                 ),
                 "document_type": filters.get("document_type", "any"),
+                "review_is_not_recommendation": True,
+                "max_review_candidates": 5,
             },
             "more_available": max(0, total_found - len(papers)),
         }
@@ -561,7 +580,7 @@ class ResearchService:
         prefer_long_form: bool,
         exclude_electric_vehicles: bool,
         deadline: float,
-    ) -> tuple[list[Paper], list[Paper], dict[str, int]]:
+    ) -> tuple[list[Paper], list[Paper], list[Paper], dict[str, int]]:
         """Only enrich likely matches; route fallback by verified yield."""
         all_papers = [paper for result in source_results if result.error is None for paper in result.papers]
         filtered, counts = self._filter_search_candidates(
@@ -593,6 +612,22 @@ class ResearchService:
                 self.repository_resolver.resolve(paper)
             except Exception:
                 logger.info("event=repository_resolution status=error paper_id=%s", paper.internal_id, exc_info=True)
+        # Recover stale publisher PDF links only for plausible Baja leads. The
+        # publisher page must match DOI and title, and its PDF is still checked
+        # by the same anonymous full-download verifier below.
+        publisher_candidates = [
+            paper for paper in unique
+            if paper.doi and application_context_signal(paper) >= 0.70
+            and technical_relevance_signal(paper, focus, ()) < 0.25
+            and OjsPublisherResolver.is_candidate(paper)
+        ][:2]
+        for paper in publisher_candidates:
+            if time.monotonic() >= deadline:
+                break
+            try:
+                self.publisher_resolver.resolve(paper, deadline=deadline)
+            except Exception:
+                logger.info("event=publisher_resolution status=error paper_id=%s", paper.internal_id, exc_info=True)
         unique = deduplicate_papers(unique)
         before_type = len(unique)
         if document_type == "bachelor_thesis":
@@ -602,7 +637,7 @@ class ResearchService:
         elif document_type == "articles":
             unique = [paper for paper in unique if paper.document_type in {"journal_article", "conference_paper", "article"}]
         counts["wrong_document_type"] = before_type - len(unique)
-        relevant, relevance_counts = filter_relevant_papers(unique, focus, queries, require_context=True)
+        relevant, review, relevance_counts = partition_search_papers(unique, focus, queries)
         counts.update(relevance_counts)
         if relevant:
             enriched = self.router.enrich(relevant, limit=min(3, limit))
@@ -621,7 +656,13 @@ class ResearchService:
         )
         counts["unverified_open_access"] = rejected
         final = self.storage.upsert_papers(final)
-        return final, ranked, counts
+        approved_ids = {paper.internal_id for paper in final}
+        review = [paper for paper in review if paper.internal_id not in approved_ids]
+        review_ranked = rank_papers(
+            self.storage.upsert_papers(review), queries, technical_focus=focus,
+            limit=None, prefer_theses=prefer_long_form, require_context=False,
+        )
+        return final, ranked, review_ranked, counts
 
     def search(
         self,
@@ -704,13 +745,22 @@ class ResearchService:
                     for paper in cached_papers
                     if paper.access_status == "verified_pdf" and paper.full_text_url
                 ]
+                cached_review = cached.get("review_papers", [])[:5]
+                self._validate_papers(cached_review)
+                approved_ids = {paper.internal_id for paper in cached_papers}
+                cached_review = [
+                    paper for paper in cached_review
+                    if paper.access_status == "verified_pdf" and paper.full_text_url
+                    and paper.internal_id not in approved_ids
+                ]
                 diagnostics = dict(cached.get("diagnostics") or {})
-                self.storage.upsert_papers(cached_papers)
+                self.storage.upsert_papers([*cached_papers, *cached_review])
                 logger.info("event=academic_search cache=hit returned=%d", len(cached_papers))
                 return self._search_response(
                     queries=effective_queries,
                     filters=filters,
                     papers=cached_papers,
+                    review_papers=cached_review,
                     total_found=int(cached.get("total_found", len(cached["papers"]))),
                     statuses=statuses,
                     cache_hit=True,
@@ -731,7 +781,7 @@ class ResearchService:
             deadline=search_deadline,
         )
         focus = (technical_focus or queries[0]).strip()
-        final, ranked, filter_counts = self._rank_and_verify(
+        final, ranked, review_ranked, filter_counts = self._rank_and_verify(
             source_results, focus=focus, queries=effective_queries,
             limit=limit, document_type=document_type,
             prefer_long_form=prefer_long_form,
@@ -742,7 +792,7 @@ class ResearchService:
             local = self.storage.search_local(focus, limit=max(20, limit * 8))
             if local:
                 source_results.append(SourceResult(source="local_cache", query=focus, papers=local, cache_hit=True))
-                final, ranked, filter_counts = self._rank_and_verify(
+                final, ranked, review_ranked, filter_counts = self._rank_and_verify(
                     source_results, focus=focus, queries=effective_queries,
                     limit=limit, document_type=document_type,
                     prefer_long_form=prefer_long_form,
@@ -758,13 +808,20 @@ class ResearchService:
                 deadline=search_deadline,
             )
             source_results.extend(fallback)
-            final, ranked, filter_counts = self._rank_and_verify(
+            final, ranked, review_ranked, filter_counts = self._rank_and_verify(
                 source_results, focus=focus, queries=effective_queries,
                 limit=limit, document_type=document_type,
                 prefer_long_form=prefer_long_form,
                 exclude_electric_vehicles=exclude_electric_vehicles,
                 deadline=search_deadline,
             )
+        approved_ids = {paper.internal_id for paper in final}
+        review_ranked = [paper for paper in review_ranked if paper.internal_id not in approved_ids]
+        review_final, _ = self._select_final_papers(
+            review_ranked, limit=5, open_access_only=True,
+            prefer_long_form=prefer_long_form, deadline=search_deadline,
+        )
+        review_final = self.storage.upsert_papers(review_final)
         statuses = self._aggregate_statuses(source_results)
         self.last_status = statuses
         verified_found = len(final)
@@ -775,11 +832,11 @@ class ResearchService:
             )
         if filter_counts.get("wrong_technical_focus"):
             filter_warnings.append(
-                f"{filter_counts['wrong_technical_focus']} resultado(s) foram excluídos por não tratar do foco técnico solicitado."
+                f"{filter_counts['wrong_technical_focus']} resultado(s) não entraram nos confirmados por foco técnico insuficiente; alguns podem constar em 'para avaliar'."
             )
         if filter_counts.get("missing_baja_context"):
             filter_warnings.append(
-                f"{filter_counts['missing_baja_context']} resultado(s) foram excluídos por não ter contexto Baja/Formula/off-road suficiente."
+                f"{filter_counts['missing_baja_context']} resultado(s) não entraram nos confirmados por contexto Baja/Formula/off-road insuficiente; alguns podem constar em 'para avaliar'."
             )
         if filter_counts.get("wrong_document_type"):
             filter_warnings.append(
@@ -797,13 +854,14 @@ class ResearchService:
             filter_warnings.append(
                 f"Apenas {len(final)} trabalho(s) atenderam simultaneamente aos critérios de tema, contexto Baja e PDF gratuito verificado."
             )
-        if final or not any(item.error for item in source_results):
+        if final or review_final or not any(item.error for item in source_results):
             self.storage.save_search(
                 cache_key=key,
                 original_query=original_query,
                 expanded_queries=effective_queries,
                 filters=filters,
                 papers=final,
+                review_papers=review_final,
                 source_status=statuses,
                 total_found=verified_found,
                 diagnostics={
@@ -822,6 +880,7 @@ class ResearchService:
             queries=effective_queries,
             filters=filters,
             papers=final,
+            review_papers=review_final,
             total_found=verified_found,
             statuses=statuses,
             cache_hit=False,

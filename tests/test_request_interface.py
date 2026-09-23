@@ -12,7 +12,7 @@ def test_short_request_infers_topic_and_keeps_tcc_preference():
 
 
 def test_request_count_needs_no_extra_field():
-    assert validate_search_args({"request": "busque 3 artigos sobre LoRa"})["limit"] == 3
+    assert validate_search_args({"request": "busque 3 artigos sobre LoRa"})["limit"] == 5
     assert validate_search_args({"request": "LoRa 868 MHz"})["limit"] == 5
 
 

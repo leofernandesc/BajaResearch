@@ -45,7 +45,7 @@ SEARCH_SCHEMA = {
                 "minimum": 1,
                 "maximum": 20,
                 "default": 5,
-                "description": "Final number of papers to return.",
+                "description": "Target of at least five confirmed works (up to 20), plus at most five separate review candidates. Fewer may be returned when evidence is insufficient.",
             },
             "year_from": {"type": ["integer", "null"], "minimum": 1000, "maximum": 2200},
             "year_to": {"type": ["integer", "null"], "minimum": 1000, "maximum": 2200},
@@ -164,6 +164,7 @@ def validate_search_args(args: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("limit must be an integer") from exc
     if not 1 <= limit <= 20:
         raise ValueError("limit must be between 1 and 20")
+    limit = max(5, limit)
     year_from = _year(args.get("year_from"), "year_from")
     year_to = _year(args.get("year_to"), "year_to")
     if year_from and year_to and year_from > year_to:

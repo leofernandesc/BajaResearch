@@ -23,7 +23,7 @@ def academic_request_context(user_message: str = "", platform: str = "", **_kwar
             "BAJA Research: neste pedido acadêmico, Baja SAE/Formula/off-road é contexto "
             "implícito, e o PDF completo, gratuito e verificado já é obrigatório. "
             "Use search_academic_papers UMA vez com request igual à mensagem original "
-            "e limit igual à quantidade pedida; o plugin faz busca adaptativa. "
+            "e limit de pelo menos 5; o plugin faz busca adaptativa. "
             "Não faça tool_search/tool_describe nem crie várias consultas por padrão. "
             "'Artigos' é genérico: não use document_type=articles a menos que o usuário "
             "diga somente artigos de periódico/conferência. TCC explícito usa "
@@ -32,6 +32,9 @@ def academic_request_context(user_message: str = "", platform: str = "", **_kwar
             "Responda apenas com os resultados atuais da ferramenta e full_text_url "
             "dos registros access_status=verified_pdf. "
             "Nunca complete DOI, título, autores, PDF ou quantidade de resultados de memória. "
+            "No WhatsApp, separe 'Confirmados para Baja' (results) de 'Para avaliar' "
+            "(review_candidates, no máximo 5). Candidatos não são confirmados; "
+            "explique a incerteza e nunca invente itens para completar cinco. "
             "Se retornarem menos trabalhos, informe isso e as fontes indisponíveis."
         )
     }

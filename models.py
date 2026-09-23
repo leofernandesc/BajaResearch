@@ -529,6 +529,12 @@ def merge_papers(left: Paper, right: Paper) -> Paper:
         verified_open_access_url=left.verified_open_access_url or right.verified_open_access_url,
         link_status={**left.link_status, **right.link_status},
     )
+    # A DOI-and-title-matched publisher page supersedes stale aggregator
+    # metadata, including generic journal descriptions and obsolete PDF URLs.
+    if metadata.get("publisher_abstract"):
+        merged.abstract = str(metadata["publisher_abstract"])
+    if metadata.get("publisher_pdf_url"):
+        merged.open_access_url = str(metadata["publisher_pdf_url"])
     merged.internal_id = make_internal_id(merged)
     return merged
 

@@ -17,7 +17,7 @@ except ImportError:  # pragma: no cover - direct test imports
     from models import Paper, make_internal_id, merge_papers, normalize_doi, normalize_title, paper_from_storage
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS papers (
@@ -79,6 +79,8 @@ CREATE TABLE IF NOT EXISTS search_results (
     score REAL,
     score_details_json TEXT NOT NULL,
     sources_json TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT 'approved',
+    review_reason TEXT,
     PRIMARY KEY (search_id, paper_id)
 );
 
@@ -112,6 +114,7 @@ CREATE INDEX IF NOT EXISTS idx_papers_title_year ON papers(title, year);
 CREATE INDEX IF NOT EXISTS idx_papers_access ON papers(access_status, document_type);
 CREATE INDEX IF NOT EXISTS idx_searches_created_at ON searches(created_at);
 CREATE INDEX IF NOT EXISTS idx_search_results_paper ON search_results(paper_id);
+CREATE INDEX IF NOT EXISTS idx_search_results_category ON search_results(search_id, category, rank);
 CREATE INDEX IF NOT EXISTS idx_source_query_created_at ON source_query_cache(created_at);
 CREATE INDEX IF NOT EXISTS idx_access_checked_at ON access_checks(checked_at);
 """
@@ -255,6 +258,8 @@ class ResearchStorage:
                     ("score", "REAL"),
                     ("score_details_json", "TEXT NOT NULL DEFAULT '{}'"),
                     ("sources_json", "TEXT NOT NULL DEFAULT '[]'"),
+                    ("category", "TEXT NOT NULL DEFAULT 'approved'"),
+                    ("review_reason", "TEXT"),
                 ):
                     if name not in result_columns:
                         connection.execute(f"ALTER TABLE search_results ADD COLUMN {name} {definition}")
@@ -405,6 +410,7 @@ class ResearchStorage:
         expanded_queries: list[str],
         filters: Mapping[str, Any],
         papers: list[Paper],
+        review_papers: list[Paper] | None = None,
         source_status: Mapping[str, Any],
         total_found: int | None = None,
         diagnostics: Mapping[str, Any] | None = None,
@@ -446,20 +452,20 @@ class ResearchStorage:
                 "SELECT id FROM searches WHERE cache_key=?", (cache_key,)
             ).fetchone()[0]
             connection.execute("DELETE FROM search_results WHERE search_id=?", (search_id,))
-            for rank, paper in enumerate(papers, start=1):
-                connection.execute(
-                    """INSERT INTO search_results (
-                       search_id, paper_id, rank, score, score_details_json, sources_json
-                    ) VALUES (?,?,?,?,?,?)""",
-                    (
-                        search_id,
-                        paper.internal_id,
-                        rank,
-                        paper.ranking_score,
-                        _json(paper.score_details),
-                        _json(paper.sources),
-                    ),
-                )
+            approved_ids = {paper.internal_id for paper in papers}
+            for category, items in (("approved", papers), ("review", review_papers or [])):
+                for rank, paper in enumerate(items, start=1):
+                    if category == "review" and paper.internal_id in approved_ids:
+                        continue
+                    connection.execute(
+                        """INSERT INTO search_results (
+                           search_id, paper_id, rank, score, score_details_json,
+                           sources_json, category, review_reason
+                        ) VALUES (?,?,?,?,?,?,?,?)""",
+                        (search_id, paper.internal_id, rank, paper.ranking_score,
+                         _json(paper.score_details), _json(paper.sources), category,
+                         paper.metadata.get("review_reason") if category == "review" else None),
+                    )
         return int(search_id)
 
     def get_cached_search(
@@ -487,17 +493,24 @@ class ResearchStorage:
                 return None
             result_rows = connection.execute(
                 """SELECT p.*, sr.rank AS result_rank, sr.score AS result_score,
+                          sr.category AS result_category,
+                          sr.review_reason AS result_review_reason,
                           sr.score_details_json AS result_score_details_json
                    FROM search_results sr JOIN papers p ON p.internal_id=sr.paper_id
-                   WHERE sr.search_id=? ORDER BY sr.rank""",
+                   WHERE sr.search_id=? ORDER BY sr.category, sr.rank""",
                 (row["id"],),
             ).fetchall()
             papers: list[Paper] = []
+            review_papers: list[Paper] = []
             for result_row in result_rows:
                 paper = paper_from_storage(result_row)
                 paper.ranking_score = result_row["result_score"]
                 paper.score_details = _loads(result_row["result_score_details_json"], {})
-                papers.append(paper)
+                if result_row["result_category"] == "review":
+                    paper.metadata["review_reason"] = result_row["result_review_reason"]
+                    review_papers.append(paper)
+                else:
+                    papers.append(paper)
             return {
                 "search_id": row["id"],
                 "created_at": row["created_at"],
@@ -508,6 +521,7 @@ class ResearchStorage:
                 "algorithm_version": row["algorithm_version"],
                 "total_found": max(int(row["total_found"] or 0), len(papers)),
                 "papers": papers,
+                "review_papers": review_papers,
             }
 
     def save_source_query(
@@ -665,6 +679,9 @@ class ResearchStorage:
             papers = connection.execute("SELECT COUNT(*) FROM papers").fetchone()[0]
             searches = connection.execute("SELECT COUNT(*) FROM searches").fetchone()[0]
             results = connection.execute("SELECT COUNT(*) FROM search_results").fetchone()[0]
+            review_results = connection.execute(
+                "SELECT COUNT(*) FROM search_results WHERE category='review'"
+            ).fetchone()[0]
             source_queries = connection.execute(
                 "SELECT COUNT(*) FROM source_query_cache"
             ).fetchone()[0]
@@ -680,6 +697,7 @@ class ResearchStorage:
                 "papers_cached": int(papers),
                 "searches_cached": int(searches),
                 "search_results_cached": int(results),
+                "review_results_cached": int(review_results),
                 "source_queries_cached": int(source_queries),
                 "access_checks_cached": int(access_checks),
                 "papers_fts_indexed": int(fts_papers),

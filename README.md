@@ -1,7 +1,7 @@
 # BAJA Research
 
 BAJA Research é um plugin standalone para o Hermes Agent que encontra
-literatura acadêmica aplicável a equipes Baja SAE. A versão 0.4.0 foi desenhada
+literatura acadêmica aplicável a equipes Baja SAE. A versão 0.5.0 foi desenhada
 para uso local, com ou sem Hermes, e no WhatsApp self-chat, com prioridade para TCCs,
 monografias, dissertações e teses extensas.
 
@@ -51,7 +51,8 @@ CLI local ou Hermes (chat / WhatsApp self-chat)
              -> se faltarem resultados válidos: rota 2
                 BDTD + Semantic Scholar + arXiv API + consultas alternativas
              -> fallback FTS5 de metadados locais, com PDF revalidado
-             -> ranking e resposta curta + estado de cada fonte
+             -> ranking: confirmados + até 5 candidatos para avaliar
+             -> resposta curta com dois grupos + estado de cada fonte
              -> SQLite local (diretório de dados do Hermes ou XDG no CLI)
 ```
 
@@ -102,6 +103,15 @@ O resolvedor de repositórios conhece DSpace 6 e DSpace 7 e usa OAI-PMH/METS/ORE
 para instalações DSpace 8/9 que protegem a API REST. Ele tenta converter a
 landing page em um bitstream original. Uma falha em uma fonte não derruba a
 busca inteira; o erro, inclusive HTTP 429, aparece em `sources` e `warnings`.
+
+Para um editor OJS com links antigos observados (RSP Science Hub), um fallback
+limitado consulta a página pública do próprio editor. Ele só aceita o novo
+resumo e link candidato quando DOI e título correspondem exatamente ao registro;
+o PDF ainda passa pelo verificador anônimo normal. Isso não é scraping do
+Google Scholar. O Hermes tem ferramentas genéricas de web/navegador, mas elas
+não são necessárias para a busca normal e permanecem desativadas no WhatsApp.
+Uma integração MCP de navegador só deve ser considerada se os casos reais de
+links quebrados justificarem seu custo, latência e superfície de acesso.
 
 ## Normalização, deduplicação e ranking
 
@@ -305,8 +315,14 @@ A skill e o hook ajudam o Hermes a usar a ferramenta em uma chamada inicial,
 responder no idioma do usuário e nunca completar metadados de memória. O
 plugin insere o contexto Baja, escolhe consultas curtas em português/inglês e
 exige PDF completo gratuito verificado mesmo quando o pedido não diz isso.
-No WhatsApp, a resposta lista no máximo cinco trabalhos
-por padrão; a ferramenta aceita um limite final entre 1 e 20.
+No WhatsApp, a resposta separa **confirmados para Baja** de até cinco
+**candidatos para avaliar**. A busca tenta obter pelo menos cinco confirmados
+por padrão (até 20 quando solicitado), mas pode trazer menos quando as fontes
+não oferecem evidência suficiente. Os candidatos podem ter aplicação indireta
+ao Baja ou foco técnico ainda incerto; não são apresentados como recomendações.
+Ambos os grupos exigem PDF completo, gratuito e verificado anonimamente.
+Uma menção ao tema no resumo também pode comprovar o foco técnico, mesmo se
+o título for mais genérico. O agente não completa vagas com dados inventados.
 
 Para um teste de eletrônica que preserve a aplicação correta:
 
@@ -342,11 +358,14 @@ Hermes.
 5. Envie uma mensagem para a conversa com você mesmo:
 
    ```text
-   Busque 3 TCCs sobre suspensão
+   artigos sobre LoRa
    ```
 
-A resposta correta contém links diretos em `full_text_url`, não links de
-compra ou landing pages. Não configure grupo, número dedicado, allowlist,
+A resposta deve separar `Confirmados para Baja` (meta de cinco) de
+`Para avaliar` (até cinco, somente quando houver candidatos verificados),
+informando explicitamente qualquer falta de confirmados. Todos os itens
+exibidos precisam de links diretos em `full_text_url`, não links de compra ou
+landing pages. Não configure grupo, número dedicado, allowlist,
 `require mention` ou VPS nesta fase.
 
 ## Cache e dados persistentes

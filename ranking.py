@@ -13,8 +13,10 @@ except ImportError:  # pragma: no cover
     from models import Paper, is_long_form_document, normalize_title
 
 
-RANKING_VERSION = "5"
-TECHNICAL_RELEVANCE_THRESHOLD = 0.30
+RANKING_VERSION = "6"
+# An exact mention in an abstract contributes 0.25. Do not throw away a
+# repository TCC merely because its title describes the broader subsystem.
+TECHNICAL_RELEVANCE_THRESHOLD = 0.25
 FOCUS_RELEVANCE_THRESHOLD = 0.15
 APPLICATION_CONTEXT_THRESHOLD = 0.70
 
@@ -309,6 +311,52 @@ def filter_relevant_papers(
     return kept, rejected
 
 
+def partition_search_papers(
+    papers: Iterable[Paper], technical_focus: str, queries: Iterable[str]
+) -> tuple[list[Paper], list[Paper], dict[str, int]]:
+    """Separate confirmed application matches from explicitly uncertain leads.
+
+    The review tier is not a relaxation of PDF/EV access requirements. It only
+    records *why* relevance is uncertain; callers verify every PDF separately.
+    """
+    query_list = list(queries)
+    approved: list[Paper] = []
+    review: list[Paper] = []
+    counts = {"wrong_technical_focus": 0, "missing_baja_context": 0}
+    focus_tokens = _technical_tokens(technical_focus)
+    for paper in papers:
+        technical = technical_relevance_signal(paper, technical_focus, query_list)
+        focus = technical_relevance_signal(paper, technical_focus, ())
+        context = application_context_signal(paper)
+        technical_ok = (technical >= TECHNICAL_RELEVANCE_THRESHOLD
+                        and focus >= FOCUS_RELEVANCE_THRESHOLD)
+        context_ok = context >= APPLICATION_CONTEXT_THRESHOLD
+        if technical_ok and context_ok:
+            approved.append(paper)
+            continue
+        if not technical_ok:
+            counts["wrong_technical_focus"] += 1
+            # A Baja telemetry paper is a plausible LoRa lead, but must not
+            # be called an actual LoRa result without source evidence.
+            haystack = normalize_title(" ".join([paper.title, paper.abstract or "", *paper.topics]))
+            lora_neighbor = "lora" in focus_tokens and bool(
+                set(haystack.split()) & {"telemetry", "telemetria", "wireless", "radio", "transceiver", "transmitter"}
+            )
+            if context_ok and (focus >= 0.15 or lora_neighbor):
+                paper.metadata["review_reason"] = "technical_focus_unconfirmed"
+                review.append(paper)
+        else:
+            counts["missing_baja_context"] += 1
+            # Transfer candidates still need an explicit technical signal in
+            # their title/topics. A stray abstract mention must not make a
+            # generic IoT or aquaculture work a WhatsApp suggestion.
+            title_topics = " ".join([paper.title, *paper.topics])
+            if focus_tokens and _technical_coverage(focus_tokens, title_topics) >= 0.5:
+                paper.metadata["review_reason"] = "indirect_baja_application"
+                review.append(paper)
+    return approved, review, counts
+
+
 def rank_papers(
     papers: Iterable[Paper],
     queries: Iterable[str],
@@ -379,6 +427,7 @@ __all__ = [
     "application_context_signal",
     "electric_vehicle_signal",
     "filter_relevant_papers",
+    "partition_search_papers",
     "is_electric_vehicle_paper",
     "quality_signals",
     "rank_papers",

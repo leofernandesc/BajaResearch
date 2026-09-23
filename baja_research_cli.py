@@ -66,13 +66,23 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"   PDF: {paper['full_text_url']}")
                 if paper.get("doi"):
                     print(f"   DOI: {paper['doi']}")
+            if result.get("review_candidates"):
+                print("\nPara avaliar (não confirmados para Baja):")
+                for number, paper in enumerate(result["review_candidates"], 1):
+                    evidence = paper.get("access_verification") or {}
+                    print(f"\n{number}. {paper['title']}")
+                    print(f"   {paper.get('document_type') or 'tipo não informado'} | "
+                          f"{paper.get('year') or 'ano não informado'} | "
+                          f"{evidence.get('page_count', '?')} páginas")
+                    print(f"   PDF: {paper['full_text_url']}")
+                    print(f"   Motivo: {paper['review_reason']}")
             degraded = [source for source, status in result["sources"].items()
                         if status.get("status") in {"error", "partial"}]
             if degraded:
                 print("\nFontes degradadas: " + ", ".join(degraded))
             if not result["results"]:
-                print("Nenhum trabalho satisfez tema Baja/off-road e PDF gratuito completo verificado.")
-        return 0 if result["results"] else 1
+                print("Nenhum trabalho confirmado satisfez tema Baja/off-road e PDF gratuito completo verificado.")
+        return 0 if result["results"] or result.get("review_candidates") else 1
     finally:
         service.close()
 

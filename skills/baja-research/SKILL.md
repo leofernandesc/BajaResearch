@@ -1,7 +1,7 @@
 ---
 name: baja-research
 description: "Find free, verified, technically relevant academic work for Baja SAE teams."
-version: 0.4.0
+version: 0.5.0
 author: Leonardo Fernandes Cavalcante
 license: MIT
 metadata:
@@ -25,7 +25,7 @@ search workflow, not a general web search.
   `access_status=verified_pdf`, a `full_text_url`, and anonymous PDF access
   verified by a complete download and PDF parse. A DOI, an open-access label, or a publisher landing
   page alone is not sufficient.
-- Every recommendation must match both the requested technical focus and a
+- Every confirmed recommendation must match both the requested technical focus and a
   Baja SAE, Mini Baja, Formula SAE/Formula Student, ATV, or off-road vehicle
   context. Do not answer a broad request such as "eletrônica" with generic
   power-electronics papers.
@@ -35,15 +35,17 @@ search workflow, not a general web search.
   the user explicitly asks to see articles first.
 - Exclude electric, hybrid, battery-electric, and fuel-cell vehicle work by
   default. Only include it when the user explicitly asks for that technology.
-- Never weaken the free-full-text or Baja-context requirements, even if the
-  user asks for more results. Return fewer works and explain the shortage.
+- Never weaken the free-full-text requirement. If fewer than five confirmed
+  works survive, report the shortage honestly. Transferable but not yet
+  confirmed Baja matches belong only in the separate review section.
 - Never scrape Google Scholar and never imply that BAJA Research searched it.
 
 ## Required search workflow
 
-1. Identify the technical focus and how many works the user wants.
+1. Identify the technical focus. Search for at least five confirmed works;
+   honor a request for more than five up to the tool maximum.
 2. Call `search_academic_papers` once with `request` equal to the user's exact
-   message and `limit` equal to the requested count. This is enough even for
+   message and `limit` equal to at least five (or the larger requested count). This is enough even for
    `artigos sobre LoRa`: Baja context, bilingual variants, source routing,
    TCC priority and PDF verification are handled by the plugin. Do not call
    `tool_search`, `tool_describe`, or repeat searches just to compensate for a
@@ -64,8 +66,14 @@ search workflow, not a general web search.
 
 ## Response format
 
-Answer in the user's language. For chat or WhatsApp, list at most five works
-by default, even when the tool found more. For each work, show only source data:
+Answer in the user's language. For WhatsApp, make two clearly separated
+sections: `Confirmados para Baja` using `results` (at least five when the tool
+finds five; never pad a shortage), then `Para avaliar` using up to five
+`review_candidates`. Review candidates are not recommendations: explain their
+`review_reason` in plain language (`indirect_baja_application` = technical
+method with indirect Baja application; `technical_focus_unconfirmed` = Baja
+context but requested method unconfirmed). Do not silently omit review
+candidates returned by the tool. For each work, show only source data:
 
 1. exact title;
 2. shortened author list;
@@ -78,7 +86,7 @@ by default, even when the tool found more. For each work, show only source data:
 8. one short sentence explaining why it is relevant. Mark that final sentence
    as your interpretation rather than bibliographic metadata.
 
-Do not paste complete abstracts. State how many additional qualifying results
+For WhatsApp, keep each item compact. Do not paste complete abstracts. State how many additional qualifying results
 exist using `more_available`. If fewer works than requested survived, say that
 the plugin preferred returning fewer results over including off-topic,
 paywalled, unverified, or EV material. Briefly disclose every source reported
